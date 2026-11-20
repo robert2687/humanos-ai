@@ -8,7 +8,7 @@ import {
   issueNewGatewaySession,
   RateLimitInfo,
 } from '../lib/gatewayClient';
-import { WellbeingCheckIn } from '../types/humanos';
+import { SocialPlatform, WellbeingCheckIn } from '../types/humanos';
 
 interface PhilosophyViewProps {
   onStartDialogue: () => void;
@@ -77,8 +77,8 @@ const GATEWAY_MODULES = [
 const ORCHESTRATION_MODULES = [
   { name: 'Agent Router', detail: 'Dispatches across Crisis, Conflict, Cognitive, Toxicity, and Twin agents' },
   { name: 'Context Manager', detail: 'Assembles bounded conversation, Event Lab, and wellbeing context' },
-  { name: 'Memory Engine', detail: 'Prioritizes confirmed probabilistic patterns over raw hypotheses' },
-  { name: 'Safety Engine', detail: 'Pre-flight and post-flight screening for self-harm or acute distress' },
+  { name: 'Memory Engine', detail: 'Maintains a confirmed-first Dynamic User Model across personality, emotional patterns, values, relationships, goals, fears, and aspirations' },
+  { name: 'Safety Engine', detail: 'Pre-flight and post-flight screening for self-harm risk, suicide indicators, severe depression, panic attacks, and emotional collapse' },
   { name: 'Prompt Orchestrator', detail: 'Composes Knowledge Core + Charter + structured Gemini schemas' },
 ];
 
@@ -98,10 +98,20 @@ export function PhilosophyView({
   const [gatewayError, setGatewayError] = useState<string | null>(null);
 
   // Companion Surface Test: Browser Extension Pause Check
+  const SOCIAL_PLATFORMS: SocialPlatform[] = [
+    'Facebook',
+    'Instagram',
+    'Reddit',
+    'Discord',
+    'LinkedIn',
+    'X/Twitter',
+  ];
+  const [extPlatform, setExtPlatform] = useState<SocialPlatform>('X/Twitter');
   const [extContext, setExtContext] = useState('');
   const [extDraft, setExtDraft] = useState('');
   const [extLoading, setExtLoading] = useState(false);
   const [extResult, setExtResult] = useState<{
+    platform?: string;
     actualIssue: string;
     emotionalTrigger: string;
     likelyOutcome: string;
@@ -177,6 +187,7 @@ export function PhilosophyView({
         {
           method: 'POST',
           body: JSON.stringify({
+            platform: extPlatform,
             contextPost: extContext.trim(),
             draftReply: extDraft.trim(),
           }),
@@ -550,8 +561,27 @@ export function PhilosophyView({
                   Browser Extension · Digital Pause Endpoint
                 </h3>
                 <p className="text-xs text-[#57534E]">
-                  Simulates the Browser Extension surface inspecting a heated reply before posting online.
+                  Simulates the Browser Extension surface inspecting a heated reply across Facebook, Instagram, Reddit, Discord, LinkedIn, or X/Twitter before posting.
                 </p>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {SOCIAL_PLATFORMS.map((plat) => {
+                  const active = extPlatform === plat;
+                  return (
+                    <button
+                      key={plat}
+                      type="button"
+                      onClick={() => setExtPlatform(plat)}
+                      className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                        active
+                          ? 'bg-[#1E3A5F] text-[#FBF9F5]'
+                          : 'bg-[#FBF9F5] text-[#57534E] border border-[#1C1917]/12 hover:text-[#1C1917]'
+                      }`}
+                    >
+                      {plat}
+                    </button>
+                  );
+                })}
               </div>
               <input
                 type="text"
@@ -578,6 +608,12 @@ export function PhilosophyView({
 
               {extResult && (
                 <div className="border-t border-[#1C1917]/10 pt-4 space-y-2 text-xs">
+                  {extResult.platform && (
+                    <div>
+                      <span className="font-semibold text-[#1C1917]">Platform: </span>
+                      <span className="text-[#57534E]">{extResult.platform}</span>
+                    </div>
+                  )}
                   <div>
                     <span className="font-semibold text-[#1C1917]">Escalation Risk: </span>
                     <span className="font-medium text-[#9A3412]">{extResult.escalationRisk}</span>

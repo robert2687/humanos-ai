@@ -12,16 +12,23 @@ import {
   X,
 } from 'lucide-react';
 import {
+  CrisisRiskCategory,
   DialogueMessage,
+  DynamicUserModel,
   EmergingHypothesis,
   EventAnalysisRecord,
   PatternDimension,
   PatternHypothesis,
   ReflectionMode,
   ReflectionSession,
+  UserModelConfidence,
+  UserModelDomain,
   WellbeingCheckIn,
 } from '../types/humanos';
-import { detectClientCrisisSignals } from '../hooks/useHumanosStore';
+import {
+  detectClientCrisisCategories,
+  detectClientCrisisSignals,
+} from '../hooks/useHumanosStore';
 import { gatewayFetch } from '../lib/gatewayClient';
 import { CrisisBanner } from './CrisisSupportView';
 
@@ -29,6 +36,7 @@ interface DialogueViewProps {
   sessions: ReflectionSession[];
   activeSession: ReflectionSession;
   hypotheses: PatternHypothesis[];
+  dynamicUserModel: DynamicUserModel;
   wellbeingCheckIns: WellbeingCheckIn[];
   activeEventContext: EventAnalysisRecord | null;
   onClearEventContext: () => void;
@@ -48,6 +56,13 @@ interface DialogueViewProps {
     source: 'dialogue';
   }) => void;
   onUpdateHypothesisStatus: (id: string, status: 'resonates' | 'dismissed') => void;
+  onUpsertUserModelEntry: (input: {
+    domain: UserModelDomain;
+    observation: string;
+    evidence: string;
+    confidence?: UserModelConfidence;
+    source?: 'dialogue' | 'user' | 'ai-synthesis';
+  }) => void;
   onOpenCrisisSupport: () => void;
   onOpenAtlas: () => void;
 }
@@ -71,7 +86,7 @@ const MODE_OPTIONS: { id: ReflectionMode; label: string; focus: string }[] = [
   {
     id: 'growth',
     label: 'Growth',
-    focus: 'Clarify core values, strengths, purpose, and realistic next steps.',
+    focus: 'Build confidence, discipline, habits, resilience, purpose, and values-aligned life goals.',
   },
   {
     id: 'de-escalation',
@@ -124,6 +139,7 @@ export function DialogueView({
   sessions,
   activeSession,
   hypotheses,
+  dynamicUserModel,
   wellbeingCheckIns,
   activeEventContext,
   onClearEventContext,
@@ -134,6 +150,7 @@ export function DialogueView({
   onAppendMessages,
   onAddHypothesis,
   onUpdateHypothesisStatus,
+  onUpsertUserModelEntry,
   onOpenCrisisSupport,
   onOpenAtlas,
 }: DialogueViewProps) {
@@ -144,6 +161,7 @@ export function DialogueView({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [expandedBreakdowns, setExpandedBreakdowns] = useState<Record<string, boolean>>({});
   const [adoptedHypotheses, setAdoptedHypotheses] = useState<Record<string, boolean>>({});
+  const [adoptedModelUpdates, setAdoptedModelUpdates] = useState<Record<string, boolean>>({});
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const streamEndRef = useRef<HTMLDivElement | null>(null);
@@ -155,9 +173,17 @@ export function DialogueView({
   const currentModeMeta =
     MODE_OPTIONS.find((m) => m.id === activeSession.mode) || MODE_OPTIONS[0];
 
+  const draftCrisisCategories = detectClientCrisisCategories(draft);
+  const sessionCrisisCategories = Array.from(
+    new Set<CrisisRiskCategory>([
+      ...activeSession.messages.flatMap((m) => m.safetyCategories || []),
+      ...draftCrisisCategories,
+    ])
+  );
   const hasCrisisInSession =
     activeSession.messages.some((m) => m.crisisDetected) ||
-    detectClientCrisisSignals(draft);
+    detectClientCrisisSignals(draft) ||
+    sessionCrisisCategories.length > 0;
 
   const visibleHypotheses = hypotheses
     .filter((h) => h.status !== 'dismissed')
@@ -184,7 +210,8 @@ export function DialogueView({
       onSetMode(sessionId, overrideMode);
     }
 
-    const clientCrisis = detectClientCrisisSignals(text);
+    const clientCategories = detectClientCrisisCategories(text);
+    const clientCrisis = clientCategories.length > 0 || detectClientCrisisSignals(text);
     const userMessage: DialogueMessage = {
       id: `msg_${Date.now()}_u`,
       role: 'user',
@@ -192,6 +219,7 @@ export function DialogueView({
       timestamp: new Date().toISOString(),
       mode: effectiveMode,
       crisisDetected: clientCrisis,
+      safetyCategories: clientCategories,
     };
 
     const nextHistory = [...activeSession.messages, userMessage];
@@ -214,6 +242,7 @@ export function DialogueView({
           messages: nextHistory.map((m) => ({ role: m.role, content: m.content })),
           mode: effectiveMode,
           profileHypotheses: hypotheses.filter((h) => h.status !== 'dismissed'),
+          dynamicUserModel,
           wellbeingSummary: buildWellbeingSummary(),
           includeStructuredCard,
           includeBreakdown,
@@ -233,11 +262,20 @@ export function DialogueView({
         timestamp: new Date().toISOString(),
         mode: effectiveMode,
         crisisDetected: Boolean(data.crisisDetected || clientCrisis),
+        safetyCategories: Array.from(
+          new Set<CrisisRiskCategory>([
+            ...clientCategories,
+            ...(Array.isArray(data.detectedRiskCategories) ? data.detectedRiskCategories : []),
+          ])
+        ),
         structuredCard: data.structuredCard || null,
         eventBreakdown: data.eventBreakdown || null,
         cognitivePatterns: Array.isArray(data.cognitivePatterns) ? data.cognitivePatterns : [],
         emergingHypotheses: Array.isArray(data.emergingHypotheses)
           ? data.emergingHypotheses
+          : [],
+        userModelUpdates: Array.isArray(data.userModelUpdates)
+          ? data.userModelUpdates
           : [],
         followUpQuestions: Array.isArray(data.followUpQuestions)
           ? data.followUpQuestions
@@ -387,7 +425,12 @@ export function DialogueView({
           )}
 
           {/* Crisis Stabilization Banner */}
-          {hasCrisisInSession && <CrisisBanner onOpenResources={onOpenCrisisSupport} />}
+          {hasCrisisInSession && (
+            <CrisisBanner
+              detectedCategories={sessionCrisisCategories}
+              onOpenResources={onOpenCrisisSupport}
+            />
+          )}
 
           {/* Empty State / Contemplative Entry */}
           {activeSession.messages.length === 0 ? (
@@ -595,6 +638,65 @@ export function DialogueView({
                                     <>
                                       <Plus className="w-3.5 h-3.5" />
                                       <span>Save to Atlas</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Dynamic User Model Updates from Turn */}
+                    {msg.userModelUpdates && msg.userModelUpdates.length > 0 && (
+                      <div className="border border-[#1C1917]/12 rounded-lg bg-[#F4F0E8]/45 p-4 space-y-3">
+                        <div className="text-xs font-medium text-[#1E3A5F]">
+                          Dynamic User Model · Suggested Updates
+                        </div>
+                        <div className="divide-y divide-[#1C1917]/10">
+                          {msg.userModelUpdates.map((upd, idx) => {
+                            const adopted = Boolean(adoptedModelUpdates[`${msg.id}_um_${idx}`]);
+                            return (
+                              <div
+                                key={idx}
+                                className="py-2.5 first:pt-0 last:pb-0 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                              >
+                                <div className="space-y-0.5">
+                                  <div className="text-xs capitalize text-[#78716C]">{upd.domain}</div>
+                                  <p className="text-sm text-[#1C1917]">{upd.observation}</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  disabled={adopted}
+                                  onClick={() => {
+                                    onUpsertUserModelEntry({
+                                      domain: upd.domain,
+                                      observation: upd.observation,
+                                      evidence: upd.evidence,
+                                      confidence: 'emerging',
+                                      source: 'dialogue',
+                                    });
+                                    setAdoptedModelUpdates((prev) => ({
+                                      ...prev,
+                                      [`${msg.id}_um_${idx}`]: true,
+                                    }));
+                                  }}
+                                  className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap shrink-0 transition-colors inline-flex items-center gap-1.5 ${
+                                    adopted
+                                      ? 'bg-[#EBE6DF] text-[#57534E]'
+                                      : 'border border-[#1E3A5F]/30 text-[#1E3A5F] hover:bg-[#1E3A5F] hover:text-[#FBF9F5]'
+                                  }`}
+                                >
+                                  {adopted ? (
+                                    <>
+                                      <Check className="w-3.5 h-3.5" />
+                                      <span>Updated Model</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Plus className="w-3.5 h-3.5" />
+                                      <span>Add to User Model</span>
                                     </>
                                   )}
                                 </button>

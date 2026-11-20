@@ -44,6 +44,30 @@ export interface EmergingHypothesis {
   rationale: string;
 }
 
+export type CrisisRiskCategory =
+  | 'self-harm risk'
+  | 'suicide indicators'
+  | 'severe depression'
+  | 'panic attacks'
+  | 'emotional collapse';
+
+export interface SafetySignalDetail {
+  category: CrisisRiskCategory;
+  label: string;
+  detected: boolean;
+  rationale: string;
+}
+
+export interface SafetyAssessment {
+  crisisDetected: boolean;
+  severity: 'nominal' | 'elevated-distress' | 'crisis-override';
+  detectedCategories: CrisisRiskCategory[];
+  signals: SafetySignalDetail[];
+  stabilizationGuidance: string;
+  recommendedAction: string;
+  checkedAt: string;
+}
+
 export interface DialogueMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -51,10 +75,16 @@ export interface DialogueMessage {
   timestamp: string;
   mode?: ReflectionMode;
   crisisDetected?: boolean;
+  safetyCategories?: CrisisRiskCategory[];
   structuredCard?: StructuredGuidanceCard | null;
   eventBreakdown?: EventBreakdown | null;
   cognitivePatterns?: string[];
   emergingHypotheses?: EmergingHypothesis[];
+  userModelUpdates?: Array<{
+    domain: UserModelDomain;
+    observation: string;
+    evidence: string;
+  }>;
   followUpQuestions?: string[];
 }
 
@@ -96,6 +126,7 @@ export interface CognitiveDistortionReport {
   distortions: CognitiveDistortionCheck[];
   balancedPerspective: string;
   crisisDetected: boolean;
+  safetyCategories?: CrisisRiskCategory[];
 }
 
 export interface BehavioralLoopAnalysis {
@@ -111,7 +142,16 @@ export interface BehavioralLoopAnalysis {
   awarenessNote: string;
 }
 
+export type SocialPlatform =
+  | 'Facebook'
+  | 'Instagram'
+  | 'Reddit'
+  | 'Discord'
+  | 'LinkedIn'
+  | 'X/Twitter';
+
 export interface DigitalBehaviorAnalysis {
+  platform?: SocialPlatform;
   actualIssue: string;
   emotionalTrigger: string;
   likelyOutcome: string;
@@ -149,6 +189,7 @@ export interface EventAnalysisRecord {
   futureSimulation?: FutureSelfSimulation | null;
   reflectiveQuestions: string[];
   crisisDetected: boolean;
+  safetyCategories?: CrisisRiskCategory[];
 }
 
 export interface PatternHypothesis {
@@ -186,12 +227,35 @@ export interface LifeTimelineEvent {
   createdAt: string;
 }
 
+export type GrowthArea =
+  | 'Confidence'
+  | 'Discipline'
+  | 'Habits'
+  | 'Resilience'
+  | 'Purpose'
+  | 'Life Goals';
+
 export interface GrowthJournalEntry {
   id: string;
   createdAt: string;
+  area?: GrowthArea;
   prompt: string;
   entry: string;
   valueActivated: string;
+}
+
+export interface GrowthAreaPlan {
+  id: string;
+  createdAt: string;
+  area: GrowthArea;
+  reflectionInput: string;
+  currentPattern: string;
+  psychologicalObstacle: string;
+  valuesAnchor: string;
+  smallSustainableStep: string;
+  reflectionPrompt: string;
+  crisisDetected: boolean;
+  safetyCategories?: CrisisRiskCategory[];
 }
 
 export type RelationshipArea =
@@ -224,6 +288,7 @@ export interface RelationshipAreaInsight {
   boundaryOrRequest: string;
   reflectionQuestion: string;
   crisisDetected: boolean;
+  safetyCategories?: CrisisRiskCategory[];
 }
 
 export interface ExplainMePortrait {
@@ -244,3 +309,31 @@ export interface PersonalityAnalystProfile {
   strengths: string[];
   growth_opportunities: string[];
 }
+
+export type UserModelDomain =
+  | 'personality'
+  | 'emotional patterns'
+  | 'values'
+  | 'relationships'
+  | 'goals'
+  | 'fears'
+  | 'aspirations';
+
+export type UserModelConfidence = 'emerging' | 'recurring' | 'confirmed';
+
+export interface DynamicUserModelEntry {
+  id: string;
+  domain: UserModelDomain;
+  observation: string;
+  evidence: string;
+  confidence: UserModelConfidence;
+  source: 'ai-synthesis' | 'dialogue' | 'user';
+  updatedAt: string;
+}
+
+export interface DynamicUserModel {
+  updatedAt: string;
+  summaryNote: string;
+  entries: DynamicUserModelEntry[];
+}
+

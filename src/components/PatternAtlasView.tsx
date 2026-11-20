@@ -1,9 +1,16 @@
 import { useMemo, useState } from 'react';
 import { Check, Compass, Download, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { gatewayFetch } from '../lib/gatewayClient';
+import { detectClientCrisisCategories } from '../hooks/useHumanosStore';
+import { CrisisBanner } from './CrisisSupportView';
 import {
+  CrisisRiskCategory,
+  DynamicUserModel,
+  DynamicUserModelEntry,
   EventAnalysisRecord,
   ExplainMePortrait,
+  GrowthArea,
+  GrowthAreaPlan,
   GrowthJournalEntry,
   HypothesisStatus,
   LifeTimelineEvent,
@@ -14,6 +21,8 @@ import {
   RelationshipArea,
   RelationshipAreaInsight,
   RelationshipNode,
+  UserModelConfidence,
+  UserModelDomain,
   WellbeingCheckIn,
 } from '../types/humanos';
 
@@ -24,6 +33,7 @@ interface PatternAtlasViewProps {
   wellbeingCheckIns: WellbeingCheckIn[];
   timelineEvents: LifeTimelineEvent[];
   journalEntries: GrowthJournalEntry[];
+  growthPlans: GrowthAreaPlan[];
   relationships: RelationshipNode[];
   relationshipInsights: RelationshipAreaInsight[];
   explainMePortrait: ExplainMePortrait | null;
@@ -46,6 +56,10 @@ interface PatternAtlasViewProps {
   onDeleteTimelineEvent: (id: string) => void;
   onAddJournalEntry: (input: Omit<GrowthJournalEntry, 'id' | 'createdAt'>) => void;
   onDeleteJournalEntry: (id: string) => void;
+  onAddGrowthPlan: (
+    plan: Omit<GrowthAreaPlan, 'id' | 'createdAt'>
+  ) => GrowthAreaPlan;
+  onDeleteGrowthPlan: (id: string) => void;
   onAddRelationshipNode: (input: Omit<RelationshipNode, 'id' | 'updatedAt'>) => void;
   onDeleteRelationshipNode: (id: string) => void;
   onAddRelationshipInsight: (
@@ -54,6 +68,25 @@ interface PatternAtlasViewProps {
   onDeleteRelationshipInsight: (id: string) => void;
   onSetExplainMePortrait: (portrait: ExplainMePortrait | null) => void;
   onSetPersonalityProfile: (profile: PersonalityAnalystProfile | null) => void;
+  dynamicUserModel: DynamicUserModel;
+  onSetDynamicUserModel: (model: {
+    summaryNote: string;
+    entries: DynamicUserModelEntry[];
+    updatedAt?: string;
+  }) => void;
+  onUpsertUserModelEntry: (input: {
+    domain: UserModelDomain;
+    observation: string;
+    evidence: string;
+    confidence?: UserModelConfidence;
+    source?: DynamicUserModelEntry['source'];
+  }) => void;
+  onUpdateUserModelEntry: (
+    id: string,
+    patch: Partial<Pick<DynamicUserModelEntry, 'observation' | 'evidence' | 'confidence' | 'domain'>>
+  ) => void;
+  onRemoveUserModelEntry: (id: string) => void;
+  onOpenCrisisSupport: () => void;
   onClearAllData: () => void;
 }
 
@@ -94,6 +127,43 @@ const TIMELINE_CHAPTERS: LifeTimelineEvent['chapter'][] = [
   'Relationships',
   'Turning Point',
   'Present Chapter',
+];
+
+const GROWTH_AREAS: {
+  area: GrowthArea;
+  focus: string;
+  prompt: string;
+}[] = [
+  {
+    area: 'Confidence',
+    focus: 'Earned self-trust, competence evidence, and stepping forward despite self-doubt.',
+    prompt: 'Where did you handle something better than your inner critic predicted, or what small capability are you building trust in?',
+  },
+  {
+    area: 'Discipline',
+    focus: 'Values-based follow-through and reducing friction without shame.',
+    prompt: 'When you resisted following through today, what friction, fear, or fatigue stood in the way?',
+  },
+  {
+    area: 'Habits',
+    focus: 'Sustainable cue-routine-reward loops and gentle recovery after missed days.',
+    prompt: 'Which daily cue reliably triggers a helpful or unhelpful habit, and how could you redesign the environment around it?',
+  },
+  {
+    area: 'Resilience',
+    focus: 'Emotional recovery, cognitive flexibility, and staying grounded through setbacks.',
+    prompt: 'What difficult emotion or setback visited you recently, and what helped you steady yourself afterward?',
+  },
+  {
+    area: 'Purpose',
+    focus: 'Meaning, contribution, and aligning daily energy with core values.',
+    prompt: 'What gives your days a genuine sense of meaning or quiet aliveness right now?',
+  },
+  {
+    area: 'Life Goals',
+    focus: 'Long-horizon direction, realistic milestones, and balancing ambition with wellbeing.',
+    prompt: 'Looking 1 to 3 years ahead, which life goal feels most authentically yours rather than borrowed from external expectations?',
+  },
 ];
 
 const JOURNAL_PROMPTS = [
@@ -139,6 +209,56 @@ const RELATIONSHIP_ROLES: RelationshipNode['role'][] = [
   'Community',
 ];
 
+const USER_MODEL_DOMAIN_SPECS: {
+  domain: UserModelDomain;
+  label: string;
+  description: string;
+  placeholder: string;
+}[] = [
+  {
+    domain: 'personality',
+    label: 'Personality',
+    description: 'Temperamental inclinations, cognitive habits, and how you approach complexity.',
+    placeholder: 'e.g., May lean toward analytical preparation before opening up emotionally.',
+  },
+  {
+    domain: 'emotional patterns',
+    label: 'Emotional Patterns',
+    description: 'Recurring feelings, nervous-system triggers, and ways distress resolves.',
+    placeholder: 'e.g., Often feels quiet overwhelm before noticing fatigue or unmet limits.',
+  },
+  {
+    domain: 'values',
+    label: 'Values',
+    description: 'Principles that anchor self-respect, integrity, and meaningful action.',
+    placeholder: 'e.g., Prioritizes honesty and emotional reciprocity over superficial agreement.',
+  },
+  {
+    domain: 'relationships',
+    label: 'Relationships',
+    description: 'Attachment bids, communication patterns, and interpersonal boundaries.',
+    placeholder: 'e.g., Seeks reassurance through clarity rather than unspoken guessing.',
+  },
+  {
+    domain: 'goals',
+    label: 'Goals',
+    description: 'Concrete near-term aims, habits, and focus commitments.',
+    placeholder: 'e.g., Building consistent morning movement and boundary check-ins at work.',
+  },
+  {
+    domain: 'fears',
+    label: 'Fears',
+    description: 'Protective worries, vulnerabilities, and feared outcomes under pressure.',
+    placeholder: 'e.g., Fear of disappointing trusted people or losing autonomy.',
+  },
+  {
+    domain: 'aspirations',
+    label: 'Aspirations',
+    description: 'Longer-horizon sense of purpose, identity, and way of living.',
+    placeholder: 'e.g., Growing into steadier self-trust and creative contribution.',
+  },
+];
+
 function avg(nums: number[]): number {
   if (nums.length === 0) return 0;
   return nums.reduce((a, b) => a + b, 0) / nums.length;
@@ -151,6 +271,7 @@ export function PatternAtlasView({
   wellbeingCheckIns,
   timelineEvents,
   journalEntries,
+  growthPlans,
   relationships,
   relationshipInsights,
   explainMePortrait,
@@ -164,12 +285,20 @@ export function PatternAtlasView({
   onDeleteTimelineEvent,
   onAddJournalEntry,
   onDeleteJournalEntry,
+  onAddGrowthPlan,
+  onDeleteGrowthPlan,
   onAddRelationshipNode,
   onDeleteRelationshipNode,
   onAddRelationshipInsight,
   onDeleteRelationshipInsight,
   onSetExplainMePortrait,
   onSetPersonalityProfile,
+  dynamicUserModel,
+  onSetDynamicUserModel,
+  onUpsertUserModelEntry,
+  onUpdateUserModelEntry,
+  onRemoveUserModelEntry,
+  onOpenCrisisSupport,
   onClearAllData,
 }: PatternAtlasViewProps) {
   const [atlasSection, setAtlasSection] = useState<
@@ -179,6 +308,7 @@ export function PatternAtlasView({
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const [isExplaining, setIsExplaining] = useState(false);
   const [isProfiling, setIsProfiling] = useState(false);
+  const [isBuildingUserModel, setIsBuildingUserModel] = useState(false);
   const [showAnalystJson, setShowAnalystJson] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -189,6 +319,13 @@ export function PatternAtlasView({
   const [editText, setEditText] = useState('');
   const [confirmClear, setConfirmClear] = useState(false);
   const [imgFailed, setImgFailed] = useState(false);
+
+  // Dynamic User Model Filter & Inline Entry State
+  const [userModelFilter, setUserModelFilter] = useState<'all' | UserModelDomain>('all');
+  const [showUserModelForm, setShowUserModelForm] = useState(false);
+  const [umDomain, setUmDomain] = useState<UserModelDomain>('personality');
+  const [umObservation, setUmObservation] = useState('');
+  const [umEvidence, setUmEvidence] = useState('');
 
   // Wellbeing Check-in Form
   const [wbForm, setWbForm] = useState({
@@ -218,10 +355,21 @@ export function PatternAtlasView({
     patternOrLesson: '',
   });
 
-  // Growth Journal Form
+  // Growth Journal & Personal Growth Coach
+  const [selectedGrowthArea, setSelectedGrowthArea] = useState<GrowthArea>('Confidence');
+  const [journalPromptMode, setJournalPromptMode] = useState<'area' | 'general'>('area');
   const [journalPromptIdx, setJournalPromptIdx] = useState(0);
   const [journalText, setJournalText] = useState('');
   const [journalValue, setJournalValue] = useState('');
+  const [growthReflectionInput, setGrowthReflectionInput] = useState('');
+  const [isCoachingGrowth, setIsCoachingGrowth] = useState(false);
+
+  const activeGrowthSpec =
+    GROWTH_AREAS.find((g) => g.area === selectedGrowthArea) || GROWTH_AREAS[0];
+  const activeJournalPrompt =
+    journalPromptMode === 'area'
+      ? activeGrowthSpec.prompt
+      : JOURNAL_PROMPTS[journalPromptIdx];
 
   // Relationship Graph Form & Area Specialist
   const [relationshipAreaFilter, setRelationshipAreaFilter] = useState<'All' | RelationshipArea>('All');
@@ -464,6 +612,70 @@ export function PatternAtlasView({
     }
   };
 
+  const handleUpdateUserModel = async () => {
+    setIsBuildingUserModel(true);
+    setActionError(null);
+
+    try {
+      const { fullBundle } = buildFullContextBundle();
+      const hypText = hypotheses
+        .filter((h) => h.status !== 'dismissed')
+        .map((h) => `[${h.dimension}]: ${h.statement}`)
+        .join('\n');
+      const growthText = growthPlans
+        .slice(0, 6)
+        .map((g) => `[Growth ${g.area}]: ${g.valuesAnchor} — Step: ${g.smallSustainableStep}`)
+        .join('\n');
+
+      const combined = [hypText, growthText, fullBundle].filter(Boolean).join('\n\n');
+      if (combined.trim().length < 20) {
+        throw new Error(
+          'Share at least one reflection, event analysis, growth entry, or relationship note before updating your Dynamic User Model.'
+        );
+      }
+
+      const response = await gatewayFetch('/api/agents/user-model', {
+        method: 'POST',
+        body: JSON.stringify({
+          contextBundle: combined,
+          existingModel: dynamicUserModel,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Could not update Dynamic User Model.');
+      }
+
+      onSetDynamicUserModel({
+        summaryNote: data.summaryNote || '',
+        entries: Array.isArray(data.entries) ? data.entries : [],
+        updatedAt: data.updatedAt,
+      });
+      setAtlasSection('model');
+    } catch (err: unknown) {
+      setActionError(
+        err instanceof Error ? err.message : 'Dynamic User Model update failed.'
+      );
+    } finally {
+      setIsBuildingUserModel(false);
+    }
+  };
+
+  const handleSaveManualUserModelEntry = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!umObservation.trim()) return;
+    onUpsertUserModelEntry({
+      domain: umDomain,
+      observation: umObservation.trim(),
+      evidence: umEvidence.trim() || 'Added directly through personal reflection.',
+      confidence: 'confirmed',
+      source: 'user',
+    });
+    setUmObservation('');
+    setUmEvidence('');
+    setShowUserModelForm(false);
+  };
+
   const handleCreateManual = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStatement.trim()) return;
@@ -508,12 +720,64 @@ export function PatternAtlasView({
     e.preventDefault();
     if (!journalText.trim()) return;
     onAddJournalEntry({
-      prompt: JOURNAL_PROMPTS[journalPromptIdx],
+      area: selectedGrowthArea,
+      prompt: activeJournalPrompt,
       entry: journalText.trim(),
       valueActivated: journalValue.trim(),
     });
     setJournalText('');
     setJournalValue('');
+  };
+
+  const handleRunGrowthCoach = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = growthReflectionInput.trim();
+    if (trimmed.length < 10 || isCoachingGrowth) return;
+
+    setIsCoachingGrowth(true);
+    setActionError(null);
+
+    try {
+      const { fullBundle } = buildFullContextBundle();
+      const response = await gatewayFetch('/api/agents/growth-coach', {
+        method: 'POST',
+        body: JSON.stringify({
+          area: selectedGrowthArea,
+          reflectionInput: trimmed,
+          contextBundle: fullBundle.slice(0, 1500),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Unable to generate growth guidance right now.');
+      }
+
+      onAddGrowthPlan({
+        area: selectedGrowthArea,
+        reflectionInput: trimmed,
+        currentPattern: data.currentPattern || '',
+        psychologicalObstacle: data.psychologicalObstacle || '',
+        valuesAnchor: data.valuesAnchor || '',
+        smallSustainableStep: data.smallSustainableStep || '',
+        reflectionPrompt: data.reflectionPrompt || '',
+        crisisDetected: Boolean(
+          data.crisisDetected || detectClientCrisisCategories(trimmed).length > 0
+        ),
+        safetyCategories: Array.from(
+          new Set<CrisisRiskCategory>([
+            ...detectClientCrisisCategories(trimmed),
+            ...(Array.isArray(data.detectedRiskCategories) ? data.detectedRiskCategories : []),
+          ])
+        ),
+      });
+      setGrowthReflectionInput('');
+    } catch (err: unknown) {
+      setActionError(
+        err instanceof Error ? err.message : 'Unable to generate growth guidance right now.'
+      );
+    } finally {
+      setIsCoachingGrowth(false);
+    }
   };
 
   const handleSaveRelationship = (e: React.FormEvent) => {
@@ -578,7 +842,15 @@ export function PatternAtlasView({
         communicationPattern: data.communicationPattern || '',
         boundaryOrRequest: data.boundaryOrRequest || '',
         reflectionQuestion: data.reflectionQuestion || '',
-        crisisDetected: Boolean(data.crisisDetected),
+        crisisDetected: Boolean(
+          data.crisisDetected || detectClientCrisisCategories(trimmed).length > 0
+        ),
+        safetyCategories: Array.from(
+          new Set<CrisisRiskCategory>([
+            ...detectClientCrisisCategories(trimmed),
+            ...(Array.isArray(data.detectedRiskCategories) ? data.detectedRiskCategories : []),
+          ])
+        ),
       });
       setRelSituation('');
     } catch (err: unknown) {
@@ -594,6 +866,7 @@ export function PatternAtlasView({
     const payload = {
       exportedAt: new Date().toISOString(),
       note: 'HUMANOS AI Human Digital Twin Export — non-diagnostic personal self-reflection archive.',
+      dynamicUserModel,
       explainMePortrait,
       hypotheses: hypotheses.filter((h) => h.status !== 'dismissed'),
       wellbeingCheckIns,
@@ -661,6 +934,22 @@ export function PatternAtlasView({
                 </>
               ) : (
                 <span>Explain Me Mode</span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleUpdateUserModel}
+              disabled={isBuildingUserModel}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-[#1E3A5F]/35 text-[#1E3A5F] rounded-md hover:bg-[#1E3A5F] hover:text-[#FBF9F5] disabled:opacity-50 transition-colors whitespace-nowrap"
+            >
+              {isBuildingUserModel ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Updating Model...</span>
+                </>
+              ) : (
+                <span>Update User Model</span>
               )}
             </button>
 
@@ -1043,6 +1332,223 @@ export function PatternAtlasView({
             </form>
           )}
 
+          {/* Dynamic User Model (7 Core Domains) */}
+          <section className="border border-[#1C1917]/12 rounded-lg bg-[#F4F0E8]/45 p-6 sm:p-8 space-y-6">
+            <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[#1C1917]/10 pb-4">
+              <div className="space-y-1 max-w-2xl">
+                <div className="text-xs font-medium text-[#1E3A5F]">
+                  Dynamic User Model · 7 Living Dimensions
+                </div>
+                <h2 className="font-serif text-2xl font-medium text-[#1C1917]">
+                  Personality, Emotions, Values, Relationships, Goals, Fears & Aspirations
+                </h2>
+                <p className="text-xs text-[#57534E] leading-relaxed">
+                  Feeds probabilistic context into every Dialogue reflection and evolves as you confirm, edit, or synthesize across your reflections.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setShowUserModelForm((prev) => !prev)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-[#1C1917]/20 text-[#1C1917] rounded-md hover:bg-[#EBE6DF] transition-colors whitespace-nowrap"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Model Entry</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUpdateUserModel}
+                  disabled={isBuildingUserModel}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium bg-[#1E3A5F] text-[#FBF9F5] rounded-md hover:bg-[#162C49] disabled:opacity-50 transition-colors whitespace-nowrap"
+                >
+                  {isBuildingUserModel ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Synthesizing Model...</span>
+                    </>
+                  ) : (
+                    <span>Synthesize 7 Domains</span>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {dynamicUserModel.summaryNote && (
+              <p className="text-sm leading-relaxed text-[#292524] max-w-3xl">
+                {dynamicUserModel.summaryNote}
+              </p>
+            )}
+
+            {showUserModelForm && (
+              <form
+                onSubmit={handleSaveManualUserModelEntry}
+                className="border border-[#1C1917]/12 rounded-md bg-[#FBF9F5] p-4 space-y-3"
+              >
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-[#57534E] mb-1">
+                      Domain
+                    </label>
+                    <select
+                      value={umDomain}
+                      onChange={(e) => setUmDomain(e.target.value as UserModelDomain)}
+                      className="w-full px-3 py-2 text-xs rounded-md border border-[#1C1917]/15 bg-[#F4F0E8]/40 text-[#1C1917] focus:outline-none focus:border-[#1E3A5F]"
+                    >
+                      {USER_MODEL_DOMAIN_SPECS.map((d) => (
+                        <option key={d.domain} value={d.domain}>
+                          {d.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-medium text-[#57534E] mb-1">
+                      Probabilistic Observation
+                    </label>
+                    <input
+                      type="text"
+                      value={umObservation}
+                      onChange={(e) => setUmObservation(e.target.value)}
+                      placeholder={
+                        USER_MODEL_DOMAIN_SPECS.find((d) => d.domain === umDomain)?.placeholder ||
+                        'Describe what appears true here...'
+                      }
+                      className="w-full px-3 py-2 text-xs rounded-md border border-[#1C1917]/15 bg-[#F4F0E8]/40 text-[#1C1917] focus:outline-none focus:border-[#1E3A5F]"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                  <input
+                    type="text"
+                    value={umEvidence}
+                    onChange={(e) => setUmEvidence(e.target.value)}
+                    placeholder="Supporting context or life evidence (optional)"
+                    className="flex-1 px-3 py-2 text-xs rounded-md border border-[#1C1917]/15 bg-[#F4F0E8]/40 text-[#1C1917] focus:outline-none focus:border-[#1E3A5F]"
+                  />
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setShowUserModelForm(false)}
+                      className="px-3 py-1.5 text-xs text-[#57534E] hover:text-[#1C1917]"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!umObservation.trim()}
+                      className="px-3.5 py-1.5 text-xs font-medium bg-[#1E3A5F] text-[#FBF9F5] rounded hover:bg-[#162C49] disabled:opacity-45"
+                    >
+                      Save Entry
+                    </button>
+                  </div>
+                </div>
+              </form>
+            )}
+
+            {/* 7-Domain Overview & Filter Strip */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5">
+              {USER_MODEL_DOMAIN_SPECS.map((spec) => {
+                const count = dynamicUserModel.entries.filter(
+                  (e) => e.domain === spec.domain
+                ).length;
+                const active = userModelFilter === spec.domain;
+                return (
+                  <button
+                    key={spec.domain}
+                    type="button"
+                    onClick={() =>
+                      setUserModelFilter((prev) =>
+                        prev === spec.domain ? 'all' : spec.domain
+                      )
+                    }
+                    className={`text-left p-3 rounded-md border transition-colors space-y-1 ${
+                      active
+                        ? 'bg-[#FBF9F5] border-[#1E3A5F]'
+                        : 'bg-[#FBF9F5]/75 border-[#1C1917]/10 hover:bg-[#FBF9F5]'
+                    }`}
+                  >
+                    <div className="flex items-baseline justify-between gap-1">
+                      <span className="text-xs font-semibold text-[#1C1917] truncate">
+                        {spec.label}
+                      </span>
+                      <span className="font-mono text-[11px] text-[#1E3A5F] tabular-nums">
+                        {count}
+                      </span>
+                    </div>
+                    <p className="text-[11px] leading-snug text-[#78716C] line-clamp-2">
+                      {spec.description}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+
+            {dynamicUserModel.entries.length > 0 ? (
+              <div className="divide-y divide-[#1C1917]/10 border border-[#1C1917]/10 rounded-md bg-[#FBF9F5]">
+                {dynamicUserModel.entries
+                  .filter(
+                    (e) => userModelFilter === 'all' || e.domain === userModelFilter
+                  )
+                  .map((entry) => {
+                    const spec = USER_MODEL_DOMAIN_SPECS.find(
+                      (s) => s.domain === entry.domain
+                    );
+                    return (
+                      <div
+                        key={entry.id}
+                        className="p-4 flex flex-col sm:flex-row sm:items-start justify-between gap-3"
+                      >
+                        <div className="space-y-1 max-w-3xl">
+                          <div className="text-xs text-[#78716C]">
+                            <span className="font-medium text-[#1E3A5F]">
+                              {spec?.label || entry.domain}
+                            </span>
+                            <span className="mx-1.5" aria-hidden="true">·</span>
+                            <span className="capitalize">{entry.confidence}</span>
+                            <span className="mx-1.5" aria-hidden="true">·</span>
+                            <span className="font-mono tabular-nums">
+                              {new Date(entry.updatedAt).toLocaleDateString()}
+                            </span>
+                          </div>
+                          <p className="text-sm text-[#1C1917] leading-relaxed">
+                            {entry.observation}
+                          </p>
+                          {entry.evidence && (
+                            <p className="text-xs text-[#57534E]">{entry.evidence}</p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {entry.confidence !== 'confirmed' && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onUpdateUserModelEntry(entry.id, { confidence: 'confirmed' })
+                              }
+                              className="px-2.5 py-1 text-xs font-medium border border-[#1E3A5F]/30 text-[#1E3A5F] rounded hover:bg-[#1E3A5F] hover:text-[#FBF9F5] transition-colors whitespace-nowrap"
+                            >
+                              Confirm
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => onRemoveUserModelEntry(entry.id)}
+                            aria-label="Remove user model entry"
+                            className="p-1 text-[#78716C] hover:text-[#9A3412]"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            ) : (
+              <p className="text-xs text-[#78716C]">
+                No Dynamic User Model entries recorded yet. Click “Synthesize 7 Domains” after reflecting, or add your own entry in any of the seven dimensions above.
+              </p>
+            )}
+          </section>
+
           {/* Category Filter Tabs */}
           <div className="flex flex-wrap items-center gap-1.5 p-1 bg-[#F4F0E8] border border-[#1C1917]/10 rounded-lg w-fit">
             <button
@@ -1244,6 +1750,29 @@ export function PatternAtlasView({
               </div>
             )}
           </div>
+
+          {(() => {
+            const noteCategories = Array.from(
+              new Set<CrisisRiskCategory>([
+                ...detectClientCrisisCategories(wbForm.note),
+                ...wellbeingCheckIns
+                  .slice(0, 5)
+                  .flatMap((w) => detectClientCrisisCategories(w.note || '')),
+              ])
+            );
+            const highStrainAlert =
+              Boolean(
+                wellbeingSignals &&
+                  (Number(wellbeingSignals.lowMoodStrain.value) >= 4.2 ||
+                    Number(wellbeingSignals.anxietyPattern.value) >= 4.4)
+              ) || noteCategories.length > 0;
+            return highStrainAlert ? (
+              <CrisisBanner
+                detectedCategories={noteCategories}
+                onOpenResources={onOpenCrisisSupport}
+              />
+            ) : null;
+          })()}
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             <form
@@ -1499,39 +2028,72 @@ export function PatternAtlasView({
             )}
           </section>
 
-          {/* Growth Journal & Purpose Discovery */}
+          {/* Growth Journal & Personal Growth Areas */}
           <section className="lg:col-span-6 space-y-5">
             <div>
               <h2 className="font-serif text-2xl font-medium text-[#1C1917]">
-                Growth Journal & Purpose
+                Growth Journal & Six Development Areas
               </h2>
               <p className="text-xs text-[#57534E] mt-1">
-                Daily reflective writing anchored in values, emotional awareness, and deliberate growth.
+                Reflective writing and sustainable behavior design across confidence, discipline, habits, resilience, purpose, and life goals.
               </p>
+            </div>
+
+            {/* 6 Personal Growth Areas Selector */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {GROWTH_AREAS.map((item) => {
+                const active = selectedGrowthArea === item.area;
+                return (
+                  <button
+                    key={item.area}
+                    type="button"
+                    onClick={() => {
+                      setSelectedGrowthArea(item.area);
+                      setJournalPromptMode('area');
+                    }}
+                    className={`text-left p-2.5 rounded-md border transition-colors ${
+                      active
+                        ? 'bg-[#EBE6DF] border-[#1E3A5F] text-[#1C1917]'
+                        : 'bg-[#FBF9F5] border-[#1C1917]/10 text-[#57534E] hover:text-[#1C1917]'
+                    }`}
+                  >
+                    <div className="text-xs font-semibold">{item.area}</div>
+                  </button>
+                );
+              })}
             </div>
 
             <form
               onSubmit={handleSaveJournal}
               className="border border-[#1C1917]/12 rounded-lg bg-[#F4F0E8]/55 p-5 space-y-3"
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-medium text-[#1E3A5F]">Reflective Prompt</span>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-medium text-[#1E3A5F]">
+                  {selectedGrowthArea} Prompt
+                </span>
                 <button
                   type="button"
-                  onClick={() => setJournalPromptIdx((i) => (i + 1) % JOURNAL_PROMPTS.length)}
+                  onClick={() => {
+                    if (journalPromptMode === 'area') {
+                      setJournalPromptMode('general');
+                      setJournalPromptIdx(0);
+                    } else {
+                      setJournalPromptIdx((i) => (i + 1) % JOURNAL_PROMPTS.length);
+                    }
+                  }}
                   className="text-xs text-[#57534E] hover:text-[#1C1917] underline underline-offset-4"
                 >
                   Next Prompt
                 </button>
               </div>
               <p className="font-serif text-base text-[#1C1917]">
-                “{JOURNAL_PROMPTS[journalPromptIdx]}”
+                “{activeJournalPrompt}”
               </p>
               <textarea
                 value={journalText}
                 onChange={(e) => setJournalText(e.target.value)}
                 rows={4}
-                placeholder="Write freely without editing or judging..."
+                placeholder={`Reflect on ${selectedGrowthArea.toLowerCase()} without harshness or self-judgment...`}
                 className="w-full rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] p-3 text-sm leading-relaxed focus:outline-none focus:border-[#1E3A5F]"
               />
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1539,7 +2101,7 @@ export function PatternAtlasView({
                   type="text"
                   value={journalValue}
                   onChange={(e) => setJournalValue(e.target.value)}
-                  placeholder="Value activated (e.g. Honesty, Connection)"
+                  placeholder="Value activated (e.g. Integrity, Courage, Clarity)"
                   className="flex-1 min-w-[200px] px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
                 />
                 <button
@@ -1551,6 +2113,95 @@ export function PatternAtlasView({
                 </button>
               </div>
             </form>
+
+            {/* AI Purpose & Growth Coach for the active Growth Area */}
+            <form
+              onSubmit={handleRunGrowthCoach}
+              className="border border-[#1C1917]/12 rounded-lg bg-[#FBF9F5] p-5 space-y-3"
+            >
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-[#1E3A5F]">
+                  Purpose & Growth Coach · {selectedGrowthArea}
+                </div>
+                <p className="text-xs text-[#57534E]">{activeGrowthSpec.focus}</p>
+              </div>
+              <textarea
+                value={growthReflectionInput}
+                onChange={(e) => setGrowthReflectionInput(e.target.value)}
+                rows={2}
+                placeholder={`Describe a pattern, block, or goal in ${selectedGrowthArea.toLowerCase()}...`}
+                className="w-full rounded-md border border-[#1C1917]/15 bg-[#F4F0E8]/40 p-3 text-sm leading-relaxed focus:outline-none focus:border-[#1E3A5F]"
+              />
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={isCoachingGrowth || growthReflectionInput.trim().length < 10}
+                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium border border-[#1E3A5F] text-[#1E3A5F] rounded-md hover:bg-[#1E3A5F] hover:text-[#FBF9F5] disabled:opacity-45 transition-colors"
+                >
+                  {isCoachingGrowth ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Building Insight...</span>
+                    </>
+                  ) : (
+                    <span>Reflect on {selectedGrowthArea}</span>
+                  )}
+                </button>
+              </div>
+            </form>
+
+            {growthPlans.length > 0 && (
+              <div className="space-y-3">
+                {growthPlans.map((plan) => (
+                  <div
+                    key={plan.id}
+                    className="border border-[#1C1917]/12 rounded-lg bg-[#FBF9F5] p-4 space-y-2.5 text-xs"
+                  >
+                    {plan.crisisDetected && (
+                      <CrisisBanner
+                        detectedCategories={plan.safetyCategories}
+                        onOpenResources={onOpenCrisisSupport}
+                      />
+                    )}
+                    <div className="flex items-start justify-between gap-2 border-b border-[#1C1917]/10 pb-2">
+                      <div>
+                        <span className="font-semibold text-[#1E3A5F]">{plan.area}</span>
+                        <span className="mx-1.5 text-[#78716C]" aria-hidden="true">·</span>
+                        <span className="font-mono text-[#78716C] tabular-nums">
+                          {new Date(plan.createdAt).toLocaleDateString()}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteGrowthPlan(plan.id)}
+                        aria-label="Delete growth plan"
+                        className="p-1 text-[#78716C] hover:text-[#9A3412]"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <p className="text-[#292524] leading-relaxed">
+                      <span className="font-semibold text-[#1C1917]">Pattern: </span>
+                      {plan.currentPattern}
+                    </p>
+                    <p className="text-[#57534E] leading-relaxed">
+                      <span className="font-semibold text-[#1C1917]">Underlying Friction: </span>
+                      {plan.psychologicalObstacle}
+                    </p>
+                    <p className="text-[#292524] leading-relaxed">
+                      <span className="font-semibold text-[#1E3A5F]">Values Anchor: </span>
+                      {plan.valuesAnchor}
+                    </p>
+                    <p className="text-[#1C1917] leading-relaxed font-medium">
+                      Small Sustainable Step: {plan.smallSustainableStep}
+                    </p>
+                    <p className="text-[#57534E] italic">
+                      Journal Prompt: {plan.reflectionPrompt}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {journalEntries.length === 0 ? (
               <div className="border border-[#1C1917]/10 rounded-lg p-6 text-sm text-[#78716C] bg-[#F4F0E8]/35">
@@ -1565,6 +2216,12 @@ export function PatternAtlasView({
                         <span className="font-mono tabular-nums">
                           {new Date(j.createdAt).toLocaleDateString()}
                         </span>
+                        {j.area && (
+                          <>
+                            <span className="mx-1.5" aria-hidden="true">·</span>
+                            <span className="text-[#1C1917] font-medium">{j.area}</span>
+                          </>
+                        )}
                         {j.valueActivated && (
                           <>
                             <span className="mx-1.5" aria-hidden="true">·</span>
@@ -1974,6 +2631,12 @@ export function PatternAtlasView({
                       key={ins.id}
                       className="border border-[#1C1917]/12 rounded-lg bg-[#FBF9F5] p-5 space-y-4"
                     >
+                      {ins.crisisDetected && (
+                        <CrisisBanner
+                          detectedCategories={ins.safetyCategories}
+                          onOpenResources={onOpenCrisisSupport}
+                        />
+                      )}
                       <div className="flex items-start justify-between gap-3 border-b border-[#1C1917]/10 pb-3">
                         <div className="space-y-1">
                           <div className="text-xs text-[#78716C]">

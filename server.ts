@@ -21,11 +21,15 @@ import {
 } from './server/gateway.ts';
 import {
   buildBoundedContext,
+  CRISIS_RISK_CATALOG,
+  type CrisisRiskCategory,
   evaluateSafety,
   formatMemoryEngine,
   HUMANOS_KNOWLEDGE_CHARTER,
   orchestrateDialoguePrompt,
   routeAgents,
+  USER_MODEL_DOMAINS,
+  type UserModelDomain,
 } from './server/orchestrator.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -56,6 +60,42 @@ const VALID_DIMENSIONS = [
   'Challenges',
   'Relational & Communication',
 ] as const;
+
+const VALID_CRISIS_CATEGORIES = new Set<CrisisRiskCategory>(
+  CRISIS_RISK_CATALOG.map((item) => item.category)
+);
+
+function mergeRiskCategories(
+  deterministic: CrisisRiskCategory[],
+  modelReported: unknown
+): CrisisRiskCategory[] {
+  const merged = new Set<CrisisRiskCategory>(deterministic);
+  if (Array.isArray(modelReported)) {
+    for (const raw of modelReported) {
+      const normalized = String(raw || '').toLowerCase().trim() as CrisisRiskCategory;
+      if (VALID_CRISIS_CATEGORIES.has(normalized)) {
+        merged.add(normalized);
+      }
+    }
+  }
+  return CRISIS_RISK_CATALOG.map((c) => c.category).filter((c) => merged.has(c));
+}
+
+const VALID_USER_MODEL_DOMAINS = new Set<UserModelDomain>(
+  USER_MODEL_DOMAINS.map((d) => d.domain)
+);
+
+function normalizeUserModelDomain(raw: unknown): UserModelDomain {
+  const lower = String(raw || '').toLowerCase().trim() as UserModelDomain;
+  if (VALID_USER_MODEL_DOMAINS.has(lower)) return lower;
+  if (lower.includes('emotion')) return 'emotional patterns';
+  if (lower.includes('value')) return 'values';
+  if (lower.includes('relat')) return 'relationships';
+  if (lower.includes('goal')) return 'goals';
+  if (lower.includes('fear')) return 'fears';
+  if (lower.includes('aspir')) return 'aspirations';
+  return 'personality';
+}
 
 async function callGeminiWithRetry<T>(fn: () => Promise<T>, retries = 1): Promise<T> {
   try {
@@ -199,6 +239,7 @@ async function startServer() {
         messages = [],
         mode = 'insight',
         profileHypotheses = [],
+        dynamicUserModel = null,
         wellbeingSummary = '',
         includeBreakdown = false,
         includeStructuredCard = false,
@@ -223,7 +264,7 @@ async function startServer() {
       });
       routedAgent = route.primaryAgent;
 
-      const memoryBlock = formatMemoryEngine(profileHypotheses);
+      const memoryBlock = formatMemoryEngine(profileHypotheses, dynamicUserModel);
       const context = buildBoundedContext({
         messages,
         wellbeingSummary,
@@ -296,6 +337,27 @@ async function startServer() {
                   type: Type.ARRAY,
                   items: { type: Type.STRING },
                 },
+                userModelUpdates: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      domain: {
+                        type: Type.STRING,
+                        description:
+                          'One of: "personality", "emotional patterns", "values", "relationships", "goals", "fears", "aspirations".',
+                      },
+                      observation: { type: Type.STRING },
+                      evidence: { type: Type.STRING },
+                    },
+                  },
+                },
+                detectedRiskCategories: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                  description:
+                    'Optional subset of: "self-harm risk", "suicide indicators", "severe depression", "panic attacks", "emotional collapse".',
+                },
               },
               required: [
                 'reply',
@@ -313,7 +375,13 @@ async function startServer() {
       );
 
       const parsed = JSON.parse((response.text ?? '{}').trim());
-      const finalCrisis = Boolean(parsed.crisisDetected || safety.crisisOverride);
+      const detectedRiskCategories = mergeRiskCategories(
+        safety.detectedCategories,
+        parsed.detectedRiskCategories
+      );
+      const finalCrisis = Boolean(
+        parsed.crisisDetected || safety.crisisOverride || detectedRiskCategories.length > 0
+      );
       if (finalCrisis) {
         safetyStatus = 'crisis-override';
         routedAgent = 'Crisis Guardian';
@@ -370,6 +438,7 @@ async function startServer() {
       return res.json({
         reply: parsed.reply || '',
         crisisDetected: finalCrisis,
+        detectedRiskCategories,
         suggestedMode: parsed.suggestedMode || mode,
         structuredCard,
         eventBreakdown,
@@ -377,6 +446,16 @@ async function startServer() {
           ? parsed.cognitivePatterns.slice(0, 2)
           : [],
         emergingHypotheses: sanitizedHypotheses,
+        userModelUpdates: Array.isArray(parsed.userModelUpdates)
+          ? parsed.userModelUpdates
+              .slice(0, 2)
+              .map((u: { domain?: string; observation?: string; evidence?: string }) => ({
+                domain: normalizeUserModelDomain(u?.domain),
+                observation: String(u?.observation || '').trim(),
+                evidence: String(u?.evidence || '').trim(),
+              }))
+              .filter((u: { observation: string }) => u.observation.length > 0)
+          : [],
         followUpQuestions: Array.isArray(parsed.followUpQuestions)
           ? parsed.followUpQuestions.slice(0, 2)
           : [],
@@ -412,6 +491,7 @@ async function startServer() {
         eventDescription,
         contextCategory = 'Personal',
         lens = 'conflict-emotion',
+        platform = '',
       } = req.body ?? {};
 
       if (!eventDescription || typeof eventDescription !== 'string' || eventDescription.trim().length < 8) {
@@ -442,12 +522,25 @@ Evaluate the thought against the 5 core CBT cognitive distortions:
 5. mind reading
 Populate cognitivePatterns with concise detected labels, AND populate distortionChecks with entries for the detected/relevant distortions among those 5 (key, name, present, evidenceSignal, compassionateContext, groundedReframe), plus a non-blaming awarenessNote. Also provide brief facts, emotions, needs, and actions.`;
       } else if (lens === 'digital-check') {
+        const validPlatforms = new Set([
+          'Facebook',
+          'Instagram',
+          'Reddit',
+          'Discord',
+          'LinkedIn',
+          'X/Twitter',
+        ]);
+        const activePlatform = validPlatforms.has(String(platform))
+          ? String(platform)
+          : '';
         lensGuidance = `Primary Lens: Toxicity Detector & Digital Behavior Monitor.
+${activePlatform ? `Platform Context: ${activePlatform} (account for ${activePlatform}'s thread pacing, audience visibility, pile-on risk, or professional/community stakes).` : ''}
 The user is sharing an online conflict, heated message, toxic comment, or draft reply they feel tempted to send.
 Never shame the user. Populate digitalCheck thoroughly with:
+0. platform (${activePlatform || 'specified platform if mentioned, otherwise General Social'})
 1. actualIssue (what is actually at stake beneath the noise)
 2. emotionalTrigger (what feeling or boundary was activated)
-3. likelyOutcome (realistic likely consequence if responding impulsively)
+3. likelyOutcome (realistic likely consequence if responding impulsively on this platform)
 4. healthierAlternative (a calm, constructive, dignified alternative response or choice).
 Also note key emotions, needs, and facts.`;
       } else if (lens === 'future-self') {
@@ -537,6 +630,7 @@ Return valid JSON matching the schema. Keep language compassionate, probabilisti
                 digitalCheck: {
                   type: Type.OBJECT,
                   properties: {
+                    platform: { type: Type.STRING },
                     actualIssue: { type: Type.STRING },
                     emotionalTrigger: { type: Type.STRING },
                     likelyOutcome: { type: Type.STRING },
@@ -555,6 +649,12 @@ Return valid JSON matching the schema. Keep language compassionate, probabilisti
                 },
                 reflectiveQuestions: { type: Type.ARRAY, items: { type: Type.STRING } },
                 crisisDetected: { type: Type.BOOLEAN },
+                detectedRiskCategories: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                  description:
+                    'Optional subset of: "self-harm risk", "suicide indicators", "severe depression", "panic attacks", "emotional collapse".',
+                },
               },
               required: [
                 'summaryTitle',
@@ -581,7 +681,13 @@ Return valid JSON matching the schema. Keep language compassionate, probabilisti
           ),
         };
       }
-      const finalCrisis = Boolean(parsed.crisisDetected || safety.crisisOverride);
+      const detectedRiskCategories = mergeRiskCategories(
+        safety.detectedCategories,
+        parsed.detectedRiskCategories
+      );
+      const finalCrisis = Boolean(
+        parsed.crisisDetected || safety.crisisOverride || detectedRiskCategories.length > 0
+      );
       if (finalCrisis) {
         safetyStatus = 'crisis-override';
         routedAgent = 'Crisis Guardian';
@@ -597,7 +703,11 @@ Return valid JSON matching the schema. Keep language compassionate, probabilisti
         latencyMs: Date.now() - startMs,
       });
 
-      return res.json({ ...parsed, crisisDetected: finalCrisis });
+      return res.json({
+        ...parsed,
+        crisisDetected: finalCrisis,
+        detectedRiskCategories,
+      });
     } catch (err: unknown) {
       const formatted = formatApiError(err);
       recordAudit({
@@ -1026,6 +1136,10 @@ User Thought or Situation:
                 },
                 balancedPerspective: { type: Type.STRING },
                 crisisDetected: { type: Type.BOOLEAN },
+                detectedRiskCategories: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
               },
               required: [
                 'thoughtSummary',
@@ -1040,7 +1154,13 @@ User Thought or Situation:
       );
 
       const parsed = JSON.parse((response.text ?? '{}').trim());
-      const finalCrisis = Boolean(parsed.crisisDetected || safety.crisisOverride);
+      const detectedRiskCategories = mergeRiskCategories(
+        safety.detectedCategories,
+        parsed.detectedRiskCategories
+      );
+      const finalCrisis = Boolean(
+        parsed.crisisDetected || safety.crisisOverride || detectedRiskCategories.length > 0
+      );
       if (finalCrisis) {
         safetyStatus = 'crisis-override';
         routedAgent = 'Crisis Guardian';
@@ -1098,6 +1218,7 @@ User Thought or Situation:
         distortions: normalizedDistortions,
         balancedPerspective: String(parsed.balancedPerspective || ''),
         crisisDetected: finalCrisis,
+        detectedRiskCategories,
         generatedAt: new Date().toISOString(),
       });
     } catch (err: unknown) {
@@ -1190,6 +1311,10 @@ Situation / Dynamic Described:
                 boundaryOrRequest: { type: Type.STRING },
                 reflectionQuestion: { type: Type.STRING },
                 crisisDetected: { type: Type.BOOLEAN },
+                detectedRiskCategories: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
               },
               required: [
                 'dynamicSummary',
@@ -1206,7 +1331,13 @@ Situation / Dynamic Described:
       );
 
       const parsed = JSON.parse((response.text ?? '{}').trim());
-      const finalCrisis = Boolean(parsed.crisisDetected || safety.crisisOverride);
+      const detectedRiskCategories = mergeRiskCategories(
+        safety.detectedCategories,
+        parsed.detectedRiskCategories
+      );
+      const finalCrisis = Boolean(
+        parsed.crisisDetected || safety.crisisOverride || detectedRiskCategories.length > 0
+      );
       if (finalCrisis) {
         safetyStatus = 'crisis-override';
         routedAgent = 'Crisis Guardian';
@@ -1231,6 +1362,7 @@ Situation / Dynamic Described:
         boundaryOrRequest: String(parsed.boundaryOrRequest || ''),
         reflectionQuestion: String(parsed.reflectionQuestion || ''),
         crisisDetected: finalCrisis,
+        detectedRiskCategories,
         generatedAt: new Date().toISOString(),
       });
     } catch (err: unknown) {
@@ -1248,6 +1380,445 @@ Situation / Dynamic Described:
     }
   });
 
+  app.post('/api/agents/growth-coach', requireGatewaySession, rateLimitAI, async (req: GatewayRequest, res: Response) => {
+    const startMs = Date.now();
+    const session = req.humanosSession!;
+    const surface = normalizeSurface(req.body?.surface || session.surface);
+    const {
+      area = 'Confidence',
+      reflectionInput = '',
+      contextBundle = '',
+    } = req.body ?? {};
+    const safety = evaluateSafety(String(reflectionInput || ''));
+    const route = routeAgents({ endpoint: 'growth-coach', safety });
+    let routedAgent = route.primaryAgent;
+    let safetyStatus = safety.status;
+
+    try {
+      if (!reflectionInput || typeof reflectionInput !== 'string' || reflectionInput.trim().length < 10) {
+        return res.status(400).json({
+          error: 'Share a sentence or two about what you are working through in this growth area.',
+        });
+      }
+
+      const validAreas = new Set([
+        'Confidence',
+        'Discipline',
+        'Habits',
+        'Resilience',
+        'Purpose',
+        'Life Goals',
+      ]);
+      const normalizedArea = validAreas.has(String(area))
+        ? String(area)
+        : 'Confidence';
+
+      const areaFocusMap: Record<string, string> = {
+        Confidence:
+          'Focus on earned self-trust, competence evidence, calming self-doubt, and realistic action rather than performative perfection.',
+        Discipline:
+          'Focus on values-anchored follow-through, reducing decision friction, and consistency without shame or harshness.',
+        Habits:
+          'Focus on Behavioral Science cue-routine-reward loops, environment design, and compassionate recovery after missed days.',
+        Resilience:
+          'Focus on distress tolerance, cognitive flexibility, emotional recovery, and grounded perspective after setbacks.',
+        Purpose:
+          'Focus on meaning, personal values, intrinsic motivation, and aligning daily energy with what genuinely matters.',
+        'Life Goals':
+          'Focus on long-horizon clarity, values-aligned milestones, hidden tradeoffs, and balancing ambition with psychological wellbeing.',
+      };
+
+      const ai = getGeminiClient();
+      const prompt = `Act as the HUMANOS Purpose & Growth Coach (ACT + Positive Psychology + Behavioral Science + Motivational Psychology).
+Growth Area: ${normalizedArea}
+Area Lens: ${areaFocusMap[normalizedArea]}
+
+Rules:
+- Insight before advice; never use generic hustle clichés, toxic positivity, or shaming language.
+- Ground "smallSustainableStep" in realistic behavioral science (low friction, values-aligned, immediately actionable).
+- Check carefully for crisis indicators ("crisisDetected").
+
+${contextBundle ? `Relevant Context from User's Atlas:\n${String(contextBundle).slice(0, 1500)}\n` : ''}
+User Reflection in ${normalizedArea}:
+"${reflectionInput.trim().slice(0, 4000)}"`;
+
+      const response = await callGeminiWithRetry(() =>
+        ai.models.generateContent({
+          model: MODEL_NAME,
+          contents: prompt,
+          config: {
+            systemInstruction: HUMANOS_KNOWLEDGE_CHARTER,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                currentPattern: { type: Type.STRING },
+                psychologicalObstacle: { type: Type.STRING },
+                valuesAnchor: { type: Type.STRING },
+                smallSustainableStep: { type: Type.STRING },
+                reflectionPrompt: { type: Type.STRING },
+                crisisDetected: { type: Type.BOOLEAN },
+                detectedRiskCategories: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+              },
+              required: [
+                'currentPattern',
+                'psychologicalObstacle',
+                'valuesAnchor',
+                'smallSustainableStep',
+                'reflectionPrompt',
+                'crisisDetected',
+              ],
+            },
+          },
+        })
+      );
+
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      const detectedRiskCategories = mergeRiskCategories(
+        safety.detectedCategories,
+        parsed.detectedRiskCategories
+      );
+      const finalCrisis = Boolean(
+        parsed.crisisDetected || safety.crisisOverride || detectedRiskCategories.length > 0
+      );
+      if (finalCrisis) {
+        safetyStatus = 'crisis-override';
+        routedAgent = 'Crisis Guardian';
+      }
+
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/growth-coach',
+        routedAgent,
+        safetyStatus,
+        httpStatus: 200,
+        latencyMs: Date.now() - startMs,
+      });
+
+      return res.json({
+        area: normalizedArea,
+        currentPattern: String(parsed.currentPattern || ''),
+        psychologicalObstacle: String(parsed.psychologicalObstacle || ''),
+        valuesAnchor: String(parsed.valuesAnchor || ''),
+        smallSustainableStep: String(parsed.smallSustainableStep || ''),
+        reflectionPrompt: String(parsed.reflectionPrompt || ''),
+        crisisDetected: finalCrisis,
+        detectedRiskCategories,
+        generatedAt: new Date().toISOString(),
+      });
+    } catch (err: unknown) {
+      const formatted = formatApiError(err);
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/growth-coach',
+        routedAgent,
+        safetyStatus,
+        httpStatus: formatted.status,
+        latencyMs: Date.now() - startMs,
+      });
+      return res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  app.post('/api/agents/crisis-guardian', requireGatewaySession, rateLimitAI, async (req: GatewayRequest, res: Response) => {
+    const startMs = Date.now();
+    const session = req.humanosSession!;
+    const surface = normalizeSurface(req.body?.surface || session.surface);
+    const rawText = String(req.body?.text || '');
+    const contextSource = String(req.body?.contextSource || 'Safety Check');
+    const safety = evaluateSafety(rawText);
+    const route = routeAgents({ endpoint: 'crisis-guardian', safety });
+    let safetyStatus = safety.status;
+
+    try {
+      if (!rawText || rawText.trim().length < 6) {
+        return res.status(400).json({
+          error: 'Share at least a few words about what you are experiencing so Crisis Guardian can offer appropriate grounding and support.',
+        });
+      }
+
+      const ai = getGeminiClient();
+      const prompt = `Act as the HUMANOS Crisis Guardian & Safety Engine (non-diagnostic stabilization screening).
+Evaluate the user's message across these exact 5 Detection indicators:
+1. self-harm risk (key: "self-harm risk") — urges, plans, or recent acts of physical self-injury
+2. suicide indicators (key: "suicide indicators") — thoughts of dying, ending life, hopelessness about staying alive
+3. severe depression (key: "severe depression") — profound despair, emptiness, inability to function or get out of bed
+4. panic attacks (key: "panic attacks") — acute wave of panic, racing heart, breathlessness, hyperventilation, fear of losing control
+5. emotional collapse (key: "emotional collapse") — acute breaking point, feeling shattered, unable to hold it together
+
+Rules:
+- Return all 5 items in the "signals" array in that exact order using the exact lowercase "category" values above.
+- NEVER diagnose a medical or psychiatric condition; phrase observations compassionately around observable distress signals.
+- Set "crisisDetected": true if ANY of the 5 risk indicators appear meaningfully present, or if acute distress warrants immediate grounding and human support.
+- Write "stabilizationGuidance" as calm, warm, unhurried grounding language (2-3 sentences).
+- Write "recommendedAction" tailored to what is present (e.g., calling/texting 988 or emergency care for suicide indicators/self-harm risk; 4-4-6 paced breathing + 5-4-3-2-1 grounding for panic attacks; reaching out to trusted people, healthcare support, or a helpline for severe depression/emotional collapse).
+
+Source Context: ${contextSource.slice(0, 80)}
+Pre-flight Screening Note: ${safety.detectedCategories.length ? safety.detectedCategories.join(', ') : 'No keyword triggers matched; evaluate semantic meaning carefully.'}
+User Expression:
+"${rawText.trim().slice(0, 4000)}"`;
+
+      const response = await callGeminiWithRetry(() =>
+        ai.models.generateContent({
+          model: MODEL_NAME,
+          contents: prompt,
+          config: {
+            systemInstruction: HUMANOS_KNOWLEDGE_CHARTER,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                crisisDetected: { type: Type.BOOLEAN },
+                severity: {
+                  type: Type.STRING,
+                  description: 'One of: nominal, elevated-distress, crisis-override',
+                },
+                signals: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      category: { type: Type.STRING },
+                      label: { type: Type.STRING },
+                      detected: { type: Type.BOOLEAN },
+                      rationale: { type: Type.STRING },
+                    },
+                    required: ['category', 'label', 'detected', 'rationale'],
+                  },
+                },
+                stabilizationGuidance: { type: Type.STRING },
+                recommendedAction: { type: Type.STRING },
+              },
+              required: [
+                'crisisDetected',
+                'severity',
+                'signals',
+                'stabilizationGuidance',
+                'recommendedAction',
+              ],
+            },
+          },
+        })
+      );
+
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      const rawSignals = Array.isArray(parsed.signals) ? parsed.signals : [];
+
+      const normalizedSignals = CRISIS_RISK_CATALOG.map((spec) => {
+        const match = rawSignals.find(
+          (item: { category?: string; label?: string }) =>
+            String(item?.category || '').toLowerCase().trim() === spec.category ||
+            String(item?.label || '').toLowerCase().trim() === spec.category
+        );
+        const deterministicMatch = safety.detectedCategories.includes(spec.category);
+        const detected = Boolean(match?.detected || deterministicMatch);
+        return {
+          category: spec.category,
+          label: spec.label,
+          detected,
+          rationale: String(
+            match?.rationale ||
+              (detected
+                ? 'Language indicates acute distress in this domain; prioritize safety and human support.'
+                : 'Not strongly signaled in this reflection.')
+          ),
+        };
+      });
+
+      const detectedCategories = normalizedSignals
+        .filter((s) => s.detected)
+        .map((s) => s.category);
+
+      const finalCrisis = Boolean(
+        parsed.crisisDetected || safety.crisisOverride || detectedCategories.length > 0
+      );
+
+      const normalizedSeverity: 'nominal' | 'elevated-distress' | 'crisis-override' =
+        finalCrisis || parsed.severity === 'crisis-override'
+          ? 'crisis-override'
+          : parsed.severity === 'elevated-distress' || safety.status === 'elevated-distress'
+            ? 'elevated-distress'
+            : 'nominal';
+
+      safetyStatus = normalizedSeverity;
+
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/crisis-guardian',
+        routedAgent: route.primaryAgent,
+        safetyStatus,
+        httpStatus: 200,
+        latencyMs: Date.now() - startMs,
+      });
+
+      return res.json({
+        crisisDetected: finalCrisis,
+        severity: normalizedSeverity,
+        detectedCategories,
+        signals: normalizedSignals,
+        stabilizationGuidance: String(parsed.stabilizationGuidance || ''),
+        recommendedAction: String(parsed.recommendedAction || ''),
+        checkedAt: new Date().toISOString(),
+      });
+    } catch (err: unknown) {
+      const formatted = formatApiError(err);
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/crisis-guardian',
+        routedAgent: route.primaryAgent,
+        safetyStatus,
+        httpStatus: formatted.status,
+        latencyMs: Date.now() - startMs,
+      });
+      return res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  app.post('/api/agents/user-model', requireGatewaySession, rateLimitAI, async (req: GatewayRequest, res: Response) => {
+    const startMs = Date.now();
+    const session = req.humanosSession!;
+    const surface = normalizeSurface(req.body?.surface || session.surface);
+    const { contextBundle = '', existingModel = null } = req.body ?? {};
+    const safety = evaluateSafety(String(contextBundle || ''));
+    const route = routeAgents({ endpoint: 'user-model', safety });
+
+    try {
+      if (!contextBundle || typeof contextBundle !== 'string' || contextBundle.trim().length < 20) {
+        return res.status(400).json({
+          error: 'Share at least one reflection, event analysis, timeline milestone, growth entry, or relationship note before updating your Dynamic User Model.',
+        });
+      }
+
+      const existingEntriesSummary =
+        existingModel && Array.isArray(existingModel.entries) && existingModel.entries.length > 0
+          ? `Current Dynamic User Model Entries (refine rather than duplicate):\n${existingModel.entries
+              .slice(0, 20)
+              .map((e: { domain?: string; observation?: string; confidence?: string }) => `- [${e.domain} | ${e.confidence}]: ${e.observation}`)
+              .join('\n')}`
+          : '';
+
+      const ai = getGeminiClient();
+      const prompt = `Act as the HUMANOS Human Digital Twin Architect synthesizing a living Dynamic User Model across all 7 domains:
+1. personality ("personality") — observed behavioral inclinations, cognitive style, strengths, and adaptive tendencies
+2. emotional patterns ("emotional patterns") — recurring emotional triggers, mood patterns, sensitivities, and regulation strategies
+3. values ("values") — core ethical anchors, priorities, and what gives choices meaning
+4. relationships ("relationships") — attachment style signals, interpersonal needs, and communication dynamics
+5. goals ("goals") — active near-term commitments, habits, and personal growth aims
+6. fears ("fears") — underlying anxieties, vulnerabilities, or protective fears shaping decisions
+7. aspirations ("aspirations") — longer-term vision, purpose thread, and who the user is becoming
+
+Rules:
+- Keep EVERY observation strictly probabilistic and provisional ("May tend toward...", "Appears motivated by...", "Notices discomfort when...").
+- NEVER diagnose clinically or assign rigid permanent labels.
+- Ground every entry in observable evidence from the user's material below; if a domain has limited direct evidence yet, note one gentle tentative hypothesis grounded in what is visible.
+- Return 1 to 3 concise entries per domain covering all 7 domains cleanly.
+
+${existingEntriesSummary}
+
+User Material Across Platform:
+${contextBundle.slice(0, 11000)}`;
+
+      const response = await callGeminiWithRetry(() =>
+        ai.models.generateContent({
+          model: MODEL_NAME,
+          contents: prompt,
+          config: {
+            systemInstruction: HUMANOS_KNOWLEDGE_CHARTER,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                summaryNote: { type: Type.STRING },
+                entries: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      domain: { type: Type.STRING },
+                      observation: { type: Type.STRING },
+                      evidence: { type: Type.STRING },
+                      confidence: {
+                        type: Type.STRING,
+                        description: 'One of: emerging, recurring, confirmed',
+                      },
+                    },
+                    required: ['domain', 'observation', 'evidence', 'confidence'],
+                  },
+                },
+              },
+              required: ['summaryNote', 'entries'],
+            },
+          },
+        })
+      );
+
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      const rawEntries = Array.isArray(parsed.entries) ? parsed.entries : [];
+      const sanitizedEntries = rawEntries
+        .slice(0, 21)
+        .map(
+          (
+            item: { domain?: string; observation?: string; evidence?: string; confidence?: string },
+            index: number
+          ) => {
+            const confRaw = String(item?.confidence || '').toLowerCase().trim();
+            const confidence =
+              confRaw === 'confirmed' || confRaw === 'recurring' || confRaw === 'emerging'
+                ? confRaw
+                : 'emerging';
+            return {
+              id: `um_${Date.now()}_${index}`,
+              domain: normalizeUserModelDomain(item?.domain),
+              observation: String(item?.observation || '').trim(),
+              evidence: String(item?.evidence || '').trim(),
+              confidence,
+              source: 'ai-synthesis' as const,
+              updatedAt: new Date().toISOString(),
+            };
+          }
+        )
+        .filter((e: { observation: string }) => e.observation.length > 0);
+
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/user-model',
+        routedAgent: route.primaryAgent,
+        safetyStatus: safety.status,
+        httpStatus: 200,
+        latencyMs: Date.now() - startMs,
+      });
+
+      return res.json({
+        summaryNote: String(parsed.summaryNote || ''),
+        entries: sanitizedEntries,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err: unknown) {
+      const formatted = formatApiError(err);
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/user-model',
+        routedAgent: route.primaryAgent,
+        safetyStatus: safety.status,
+        httpStatus: formatted.status,
+        latencyMs: Date.now() - startMs,
+      });
+      return res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
   // =========================================================================
   // COMPANION SURFACE ENDPOINTS: Browser Extension & Smart Watch Integration
   // =========================================================================
@@ -1256,7 +1827,18 @@ Situation / Dynamic Described:
     const startMs = Date.now();
     const session = req.humanosSession!;
     const surface: 'extension' = 'extension';
-    const { draftReply = '', contextPost = '' } = req.body ?? {};
+    const { draftReply = '', contextPost = '', platform = 'X/Twitter' } = req.body ?? {};
+    const validPlatforms = new Set([
+      'Facebook',
+      'Instagram',
+      'Reddit',
+      'Discord',
+      'LinkedIn',
+      'X/Twitter',
+    ]);
+    const normalizedPlatform = validPlatforms.has(String(platform))
+      ? String(platform)
+      : 'X/Twitter';
     const safety = evaluateSafety(`${contextPost}\n${draftReply}`);
     const route = routeAgents({ endpoint: 'extension-pause', safety });
 
@@ -1267,10 +1849,11 @@ Situation / Dynamic Described:
 
       const ai = getGeminiClient();
       const prompt = `Browser Extension Digital Pause Check (Toxicity Detector).
+Platform: ${normalizedPlatform}
 Context post or thread: "${String(contextPost || 'Not provided').slice(0, 1000)}"
 User's draft reply before sending: "${draftReply.trim().slice(0, 1500)}"
 
-Without shaming or lecturing, identify:
+Consider ${normalizedPlatform}'s social and communication dynamics (visibility, tone ambiguity, escalation risk). Without shaming or lecturing, identify:
 1. actualIssue
 2. emotionalTrigger
 3. likelyOutcome
@@ -1316,7 +1899,10 @@ Without shaming or lecturing, identify:
         latencyMs: Date.now() - startMs,
       });
 
-      return res.json(parsed);
+      return res.json({
+        ...parsed,
+        platform: normalizedPlatform,
+      });
     } catch (err: unknown) {
       const formatted = formatApiError(err);
       recordAudit({
@@ -1353,7 +1939,13 @@ Without shaming or lecturing, identify:
 
     const route = routeAgents({
       endpoint: 'watch-pulse',
-      safety: { status: 'nominal', crisisOverride: false, toxicitySignal: false, policyNotes: [] },
+      safety: {
+        status: 'nominal',
+        crisisOverride: false,
+        toxicitySignal: false,
+        detectedCategories: [],
+        policyNotes: [],
+      },
     });
 
     recordAudit({

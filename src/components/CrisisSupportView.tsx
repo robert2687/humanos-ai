@@ -1,11 +1,64 @@
 import { useEffect, useState } from 'react';
-import { PhoneCall, MessageSquareHeart, Globe, HeartHandshake } from 'lucide-react';
+import { PhoneCall, MessageSquareHeart, Globe, HeartHandshake, Loader2, ShieldAlert } from 'lucide-react';
+import { gatewayFetch } from '../lib/gatewayClient';
+import { CrisisRiskCategory, SafetyAssessment } from '../types/humanos';
+
+const RISK_CATEGORY_LABELS: Record<CrisisRiskCategory, string> = {
+  'self-harm risk': 'Self-Harm Risk',
+  'suicide indicators': 'Suicide Indicators',
+  'severe depression': 'Severe Depression',
+  'panic attacks': 'Panic Attacks',
+  'emotional collapse': 'Emotional Collapse',
+};
+
+export const DETECTION_DOMAINS: ReadonlyArray<{
+  category: CrisisRiskCategory;
+  label: string;
+  signalFocus: string;
+  stabilizationResponse: string;
+}> = [
+  {
+    category: 'self-harm risk',
+    label: 'Self-Harm Risk',
+    signalFocus: 'Urges, plans, or active thoughts around physical self-injury.',
+    stabilizationResponse: 'Immediate safety containment, Crisis Text Line / 988 connection, and zero-shame grounding.',
+  },
+  {
+    category: 'suicide indicators',
+    label: 'Suicide Indicators',
+    signalFocus: 'Expressions of wanting to die, ending life, or feeling others would be better off.',
+    stabilizationResponse: 'Highest-priority Crisis Guardian override directing immediately to 988 and live human support.',
+  },
+  {
+    category: 'severe depression',
+    label: 'Severe Depression',
+    signalFocus: 'Profound hopelessness, persistent numbness, or inability to sustain daily basics.',
+    stabilizationResponse: 'Low-pressure emotional validation and warm encouragement toward trusted people or licensed care.',
+  },
+  {
+    category: 'panic attacks',
+    label: 'Panic Attacks',
+    signalFocus: 'Acute terror waves, racing heart, breathlessness, or fear of losing control.',
+    stabilizationResponse: 'Immediate 4-4-6 paced exhalations and 5-4-3-2-1 sensory grounding to steady the nervous system.',
+  },
+  {
+    category: 'emotional collapse',
+    label: 'Emotional Collapse',
+    signalFocus: 'Acute breaking point where coping capacity feels exhausted and functioning breaks down.',
+    stabilizationResponse: 'Gentle pacing, stepping away from heavy problem-solving, and anchoring with safe human support.',
+  },
+];
 
 interface CrisisBannerProps {
+  detectedCategories?: CrisisRiskCategory[];
   onOpenResources?: () => void;
 }
 
-export function CrisisBanner({ onOpenResources }: CrisisBannerProps) {
+export function CrisisBanner({ detectedCategories, onOpenResources }: CrisisBannerProps) {
+  const uniqueLabels = Array.from(
+    new Set((detectedCategories || []).map((c) => RISK_CATEGORY_LABELS[c] || c))
+  );
+
   return (
     <div
       role="alert"
@@ -17,8 +70,14 @@ export function CrisisBanner({ onOpenResources }: CrisisBannerProps) {
             <HeartHandshake className="w-4 h-4 shrink-0" />
             <span>Immediate Support Is Available</span>
           </div>
+          {uniqueLabels.length > 0 && (
+            <div className="text-xs text-[#9A3412]/90">
+              <span>Signals noticed:</span>{' '}
+              <span>{uniqueLabels.join(' · ')}</span>
+            </div>
+          )}
           <p className="text-sm leading-relaxed text-[#292524]">
-            If you are carrying intense pain, hopelessness, or thoughts of harming yourself, you do not have to navigate this alone. HUMANOS is a reflective tool and cannot provide crisis care—please connect with a trained person right now.
+            If you are experiencing acute panic, emotional collapse, deep hopelessness, or thoughts of harming yourself, you do not have to carry this alone. HUMANOS is a reflective tool and cannot provide crisis or medical care—please connect with a trained person right now.
           </p>
           <div className="pt-1 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm font-medium text-[#1C1917]">
             <a
@@ -108,6 +167,12 @@ export function CrisisSupportView() {
   const [secondsLeft, setSecondsLeft] = useState(4);
   const [checkedSteps, setCheckedSteps] = useState<string[]>([]);
 
+  // Crisis Guardian Detection Check
+  const [checkText, setCheckText] = useState('');
+  const [isScreening, setIsScreening] = useState(false);
+  const [screenError, setScreenError] = useState<string | null>(null);
+  const [assessment, setAssessment] = useState<SafetyAssessment | null>(null);
+
   useEffect(() => {
     if (!breathingActive) return;
 
@@ -151,12 +216,42 @@ export function CrisisSupportView() {
     );
   };
 
+  const handleRunCrisisScreening = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = checkText.trim();
+    if (trimmed.length < 6 || isScreening) return;
+
+    setIsScreening(true);
+    setScreenError(null);
+
+    try {
+      const response = await gatewayFetch('/api/agents/crisis-guardian', {
+        method: 'POST',
+        body: JSON.stringify({
+          text: trimmed,
+          contextSource: 'Crisis Support Screening',
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Unable to run Crisis Guardian check right now.');
+      }
+      setAssessment(data);
+    } catch (err: unknown) {
+      setScreenError(
+        err instanceof Error ? err.message : 'Unable to run Crisis Guardian check right now.'
+      );
+    } finally {
+      setIsScreening(false);
+    }
+  };
+
   return (
     <div className="max-w-[1160px] mx-auto px-4 sm:px-8 py-10 space-y-12">
       {/* Header */}
       <section className="max-w-3xl space-y-3">
         <p className="text-xs font-medium tracking-wider uppercase text-[#9A3412]">
-          Safety & Stabilization
+          Safety & Stabilization · Crisis Guardian
         </p>
         <h1 className="font-serif text-3xl sm:text-4xl font-medium tracking-tight text-[#1C1917] [text-wrap:balance]">
           Immediate human support and grounding
@@ -216,7 +311,7 @@ export function CrisisSupportView() {
               4-4-6 Nervous System Pacing
             </h2>
             <p className="text-sm leading-relaxed text-[#57534E]">
-              Longer exhales gently signal safety to the nervous system. Follow the cadence at your own comfort.
+              Longer exhales gently signal safety to the nervous system during panic attacks or acute distress. Follow the cadence at your own comfort.
             </p>
           </div>
 
@@ -235,7 +330,7 @@ export function CrisisSupportView() {
           <button
             type="button"
             onClick={toggleBreathing}
-            className="w-full py-2.5 px-4 text-sm font-medium rounded-md bg-[#1E3A5F] text-[#FBF9F5] hover:bg-[#162C49] transition-colors"
+            className="w-full py-2.5 px-4 text-sm font-medium rounded-md bg-[#1E3A5F] text-[#FBF9F5] hover:bg-[#162C49] transition-colors whitespace-nowrap"
           >
             {breathingActive ? 'Pause Breathing Guide' : 'Begin Paced Breathing'}
           </button>
@@ -293,6 +388,149 @@ export function CrisisSupportView() {
             })}
           </div>
         </div>
+      </section>
+
+      {/* Crisis Guardian 5-Domain Detection & Distress Check */}
+      <section aria-labelledby="detection-heading" className="space-y-6 border-t border-[#1C1917]/10 pt-10">
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <div className="space-y-1 max-w-2xl">
+            <h2 id="detection-heading" className="font-serif text-xl sm:text-2xl font-medium text-[#1C1917]">
+              Crisis Guardian · Five Detection Domains
+            </h2>
+            <p className="text-sm text-[#57534E]">
+              Every reflection across HUMANOS is screened in real time for acute distress indicators—never to label or diagnose, only to pause reflection and prioritize stabilization and human care.
+            </p>
+          </div>
+          <span className="text-xs text-[#78716C]">Non-diagnostic screening · Safety above all</span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          {DETECTION_DOMAINS.map((domain, index) => {
+            const matchedSignal = assessment?.signals.find(
+              (s) => s.category === domain.category
+            );
+            const active = Boolean(matchedSignal?.detected);
+            return (
+              <div
+                key={domain.category}
+                className={`p-4 rounded-lg border space-y-2 transition-colors ${
+                  active
+                    ? 'bg-[#FDF4F2] border-[#9A3412]/35'
+                    : 'bg-[#F4F0E8]/45 border-[#1C1917]/10'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 text-[11px] font-mono tabular-nums text-[#78716C]">
+                  <span>0{index + 1}.</span>
+                  {assessment && (
+                    <span className={active ? 'text-[#9A3412] font-semibold' : 'text-[#78716C]'}>
+                      {active ? 'Signaled' : 'Clear'}
+                    </span>
+                  )}
+                </div>
+                <div className={`text-sm font-semibold ${active ? 'text-[#9A3412]' : 'text-[#1C1917]'}`}>
+                  {domain.label}
+                </div>
+                <p className="text-xs leading-relaxed text-[#57534E]">
+                  {matchedSignal?.rationale || domain.signalFocus}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+
+        <form
+          onSubmit={handleRunCrisisScreening}
+          className="border border-[#1C1917]/12 rounded-lg bg-[#F4F0E8]/55 p-6 space-y-4"
+        >
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div className="space-y-1">
+              <div className="inline-flex items-center gap-1.5 text-xs font-medium text-[#1E3A5F]">
+                <ShieldAlert className="w-3.5 h-3.5" />
+                <span>Gentle Distress & Grounding Check</span>
+              </div>
+              <p className="text-xs text-[#57534E]">
+                If you are unsure what you are feeling right now, describe it briefly to receive tailored stabilization pacing and human-support guidance.
+              </p>
+            </div>
+            {assessment && (
+              <button
+                type="button"
+                onClick={() => setAssessment(null)}
+                className="text-xs text-[#57534E] hover:text-[#1C1917] underline underline-offset-4 whitespace-nowrap"
+              >
+                Clear Check
+              </button>
+            )}
+          </div>
+
+          <textarea
+            value={checkText}
+            onChange={(e) => setCheckText(e.target.value)}
+            rows={3}
+            placeholder="Share what feels heavy, overwhelming, or frightening right now..."
+            className="w-full rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] p-3 text-sm leading-relaxed text-[#1C1917] placeholder:text-[#78716C] focus:outline-none focus:border-[#1E3A5F]"
+          />
+
+          {screenError && (
+            <div className="text-xs text-[#9A3412] bg-[#FDF4F2] border border-[#9A3412]/20 rounded px-3 py-2">
+              {screenError}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="text-xs text-[#78716C]">
+              Screens across all 5 indicators · No clinical labels
+            </span>
+            <button
+              type="submit"
+              disabled={isScreening || checkText.trim().length < 6}
+              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium bg-[#1E3A5F] text-[#FBF9F5] rounded-md hover:bg-[#162C49] disabled:opacity-45 transition-colors whitespace-nowrap"
+            >
+              {isScreening ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Screening & Grounding...</span>
+                </>
+              ) : (
+                <span>Check Distress & Grounding</span>
+              )}
+            </button>
+          </div>
+
+          {assessment && (
+            <div
+              className={`mt-4 rounded-md border p-4 space-y-2.5 ${
+                assessment.crisisDetected
+                  ? 'bg-[#FDF4F2] border-[#9A3412]/30'
+                  : 'bg-[#FBF9F5] border-[#1C1917]/10'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <span className={assessment.crisisDetected ? 'font-semibold text-[#9A3412]' : 'font-semibold text-[#1E3A5F]'}>
+                  {assessment.crisisDetected
+                    ? 'Stabilization Priority Active'
+                    : assessment.severity === 'elevated-distress'
+                      ? 'Elevated Distress Noticed'
+                      : 'Steady Reflective Baseline'}
+                </span>
+                <span className="text-[#78716C]">
+                  {assessment.detectedCategories.length > 0
+                    ? assessment.detectedCategories
+                        .map((c) => RISK_CATEGORY_LABELS[c] || c)
+                        .join(' · ')
+                    : 'No acute crisis indicators detected'}
+                </span>
+              </div>
+              <p className="text-sm leading-relaxed text-[#292524]">
+                {assessment.stabilizationGuidance}
+              </p>
+              <p className="text-xs leading-relaxed text-[#57534E] border-t border-[#1C1917]/10 pt-2">
+                <span className="font-semibold text-[#1C1917]">Recommended Next Support: </span>
+                {assessment.recommendedAction}
+              </p>
+            </div>
+          )}
+        </form>
       </section>
 
       <section className="border-t border-[#1C1917]/10 pt-6 flex items-center gap-3 text-sm text-[#57534E]">

@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   CognitiveDistortionReport,
+  CrisisRiskCategory,
   DialogueMessage,
+  DynamicUserModel,
+  DynamicUserModelEntry,
   EventAnalysisRecord,
   ExplainMePortrait,
+  GrowthAreaPlan,
   GrowthJournalEntry,
   HypothesisStatus,
   LifeTimelineEvent,
@@ -15,6 +19,8 @@ import {
   RelationshipArea,
   RelationshipAreaInsight,
   RelationshipNode,
+  UserModelConfidence,
+  UserModelDomain,
   WellbeingCheckIn,
 } from '../types/humanos';
 
@@ -29,10 +35,12 @@ interface HumanosState {
   wellbeingCheckIns: WellbeingCheckIn[];
   timelineEvents: LifeTimelineEvent[];
   journalEntries: GrowthJournalEntry[];
+  growthPlans: GrowthAreaPlan[];
   relationships: RelationshipNode[];
   relationshipInsights: RelationshipAreaInsight[];
   explainMePortrait: ExplainMePortrait | null;
   personalityProfile: PersonalityAnalystProfile | null;
+  dynamicUserModel: DynamicUserModel;
 }
 
 function inferRelationshipArea(role?: string, area?: string): RelationshipArea {
@@ -128,6 +136,7 @@ function getInitialState(): HumanosState {
             : [],
           timelineEvents: Array.isArray(parsed.timelineEvents) ? parsed.timelineEvents : [],
           journalEntries: Array.isArray(parsed.journalEntries) ? parsed.journalEntries : [],
+          growthPlans: Array.isArray(parsed.growthPlans) ? parsed.growthPlans : [],
           relationships: Array.isArray(parsed.relationships)
             ? parsed.relationships.map((r) => ({
                 ...r,
@@ -139,6 +148,10 @@ function getInitialState(): HumanosState {
             : [],
           explainMePortrait: parsed.explainMePortrait ?? null,
           personalityProfile: parsed.personalityProfile ?? null,
+          dynamicUserModel:
+            parsed.dynamicUserModel && Array.isArray(parsed.dynamicUserModel.entries)
+              ? parsed.dynamicUserModel
+              : { updatedAt: '', summaryNote: '', entries: [] },
         };
       }
     }
@@ -156,21 +169,59 @@ function getInitialState(): HumanosState {
     wellbeingCheckIns: [],
     timelineEvents: [],
     journalEntries: [],
+    growthPlans: [],
     relationships: [],
     relationshipInsights: [],
     explainMePortrait: null,
     personalityProfile: null,
+    dynamicUserModel: { updatedAt: '', summaryNote: '', entries: [] },
   };
 }
 
-export function detectClientCrisisSignals(text: string): boolean {
+export function detectClientCrisisCategories(text: string): CrisisRiskCategory[] {
   const normalized = text.toLowerCase();
-  const patterns = [
-    /\b(kill myself|end my life|want to die|wish i was dead|better off dead)\b/,
-    /\b(suicide|suicidal|self[- ]harm|hurt myself|cut myself|end it all)\b/,
-    /\b(no reason to live|can'?t go on|hopeless and want out)\b/,
+  const matchers: ReadonlyArray<{
+    category: CrisisRiskCategory;
+    patterns: RegExp[];
+  }> = [
+    {
+      category: 'self-harm risk',
+      patterns: [
+        /\b(self[- ]?harm|hurt myself|hurting myself|cut myself|cutting myself|burn myself|harm myself|self[- ]injury)\b/,
+      ],
+    },
+    {
+      category: 'suicide indicators',
+      patterns: [
+        /\b(suicide|suicidal|kill myself|end my life|want to die|wish i was dead|wish i were dead|better off dead|end it all|no reason to live|(don'?t|do not) want to live|take my own life)\b/,
+      ],
+    },
+    {
+      category: 'severe depression',
+      patterns: [
+        /\b(severely depressed|severe depression|deep despair|completely hopeless|nothing matters anymore|(can'?t|cannot) get out of bed|empty for weeks|completely numb|worthless and hopeless|hopeless and want out)\b/,
+      ],
+    },
+    {
+      category: 'panic attacks',
+      patterns: [
+        /\b(panic attack|panicking|(can'?t|cannot) breathe|hyperventilat\w*|heart is racing|chest is tight|feel like i'?m dying|losing control right now|terrified and shaking)\b/,
+      ],
+    },
+    {
+      category: 'emotional collapse',
+      patterns: [
+        /\b(emotional collapse|falling apart|breaking down|broke down completely|(can'?t|cannot) hold it together|completely shattered|shutting down completely|(can'?t|cannot) function anymore|(can'?t|cannot) go on|(can'?t|cannot) cope anymore)\b/,
+      ],
+    },
   ];
-  return patterns.some((rx) => rx.test(normalized));
+  return matchers
+    .filter((entry) => entry.patterns.some((rx) => rx.test(normalized)))
+    .map((entry) => entry.category);
+}
+
+export function detectClientCrisisSignals(text: string): boolean {
+  return detectClientCrisisCategories(text).length > 0;
 }
 
 export function useHumanosStore() {
@@ -422,6 +473,29 @@ export function useHumanosStore() {
     }));
   }, []);
 
+  const addGrowthPlan = useCallback(
+    (plan: Omit<GrowthAreaPlan, 'id' | 'createdAt'>) => {
+      const entry: GrowthAreaPlan = {
+        ...plan,
+        id: createId('grw'),
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        growthPlans: [entry, ...prev.growthPlans],
+      }));
+      return entry;
+    },
+    []
+  );
+
+  const deleteGrowthPlan = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      growthPlans: prev.growthPlans.filter((g) => g.id !== id),
+    }));
+  }, []);
+
   const addRelationshipNode = useCallback(
     (input: Omit<RelationshipNode, 'id' | 'updatedAt'>) => {
       const node: RelationshipNode = {
@@ -482,6 +556,121 @@ export function useHumanosStore() {
     }));
   }, []);
 
+  const setDynamicUserModel = useCallback(
+    (model: { summaryNote: string; entries: DynamicUserModelEntry[]; updatedAt?: string }) => {
+      setState((prev) => {
+        const preservedUserEntries = prev.dynamicUserModel.entries.filter(
+          (e) => e.source === 'user' || e.confidence === 'confirmed'
+        );
+        const existingNormalized = new Set(
+          preservedUserEntries.map((e) => `${e.domain}:${e.observation.trim().toLowerCase()}`)
+        );
+        const mergedNew = model.entries.filter(
+          (e) => !existingNormalized.has(`${e.domain}:${e.observation.trim().toLowerCase()}`)
+        );
+        return {
+          ...prev,
+          dynamicUserModel: {
+            updatedAt: model.updatedAt || new Date().toISOString(),
+            summaryNote: model.summaryNote,
+            entries: [...preservedUserEntries, ...mergedNew],
+          },
+        };
+      });
+    },
+    []
+  );
+
+  const upsertUserModelEntry = useCallback(
+    (input: {
+      domain: UserModelDomain;
+      observation: string;
+      evidence: string;
+      confidence?: UserModelConfidence;
+      source?: DynamicUserModelEntry['source'];
+    }) => {
+      const normalized = input.observation.trim().toLowerCase();
+      if (!normalized) return;
+      setState((prev) => {
+        const existing = prev.dynamicUserModel.entries.find(
+          (e) =>
+            e.domain === input.domain &&
+            e.observation.trim().toLowerCase() === normalized
+        );
+        const now = new Date().toISOString();
+        if (existing) {
+          return {
+            ...prev,
+            dynamicUserModel: {
+              ...prev.dynamicUserModel,
+              updatedAt: now,
+              entries: prev.dynamicUserModel.entries.map((e) =>
+                e.id === existing.id
+                  ? {
+                      ...e,
+                      confidence:
+                        input.confidence ||
+                        (e.confidence === 'emerging' ? 'recurring' : e.confidence),
+                      evidence: input.evidence || e.evidence,
+                      updatedAt: now,
+                    }
+                  : e
+              ),
+            },
+          };
+        }
+        const entry: DynamicUserModelEntry = {
+          id: createId('um'),
+          domain: input.domain,
+          observation: input.observation.trim(),
+          evidence: input.evidence.trim(),
+          confidence: input.confidence || 'emerging',
+          source: input.source || 'user',
+          updatedAt: now,
+        };
+        return {
+          ...prev,
+          dynamicUserModel: {
+            ...prev.dynamicUserModel,
+            updatedAt: now,
+            entries: [entry, ...prev.dynamicUserModel.entries],
+          },
+        };
+      });
+    },
+    []
+  );
+
+  const updateUserModelEntry = useCallback(
+    (
+      id: string,
+      patch: Partial<Pick<DynamicUserModelEntry, 'observation' | 'evidence' | 'confidence' | 'domain'>>
+    ) => {
+      setState((prev) => ({
+        ...prev,
+        dynamicUserModel: {
+          ...prev.dynamicUserModel,
+          updatedAt: new Date().toISOString(),
+          entries: prev.dynamicUserModel.entries.map((e) =>
+            e.id === id ? { ...e, ...patch, updatedAt: new Date().toISOString() } : e
+          ),
+        },
+      }));
+    },
+    []
+  );
+
+  const removeUserModelEntry = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      dynamicUserModel: {
+        ...prev.dynamicUserModel,
+        updatedAt: new Date().toISOString(),
+        entries: prev.dynamicUserModel.entries.filter((e) => e.id !== id),
+      },
+    }));
+  }, []);
+
   const clearAllData = useCallback(() => {
     const fresh = createEmptySession('insight', 'Initial Reflection');
     const clean: HumanosState = {
@@ -493,10 +682,12 @@ export function useHumanosStore() {
       wellbeingCheckIns: [],
       timelineEvents: [],
       journalEntries: [],
+      growthPlans: [],
       relationships: [],
       relationshipInsights: [],
       explainMePortrait: null,
       personalityProfile: null,
+      dynamicUserModel: { updatedAt: '', summaryNote: '', entries: [] },
     };
     setState(clean);
   }, []);
@@ -510,10 +701,12 @@ export function useHumanosStore() {
     wellbeingCheckIns: state.wellbeingCheckIns,
     timelineEvents: state.timelineEvents,
     journalEntries: state.journalEntries,
+    growthPlans: state.growthPlans,
     relationships: state.relationships,
     relationshipInsights: state.relationshipInsights,
     explainMePortrait: state.explainMePortrait,
     personalityProfile: state.personalityProfile,
+    dynamicUserModel: state.dynamicUserModel,
     startNewSession,
     selectSession,
     deleteSession,
@@ -532,12 +725,18 @@ export function useHumanosStore() {
     deleteTimelineEvent,
     addJournalEntry,
     deleteJournalEntry,
+    addGrowthPlan,
+    deleteGrowthPlan,
     addRelationshipNode,
     deleteRelationshipNode,
     addRelationshipInsight,
     deleteRelationshipInsight,
     setExplainMePortrait,
     setPersonalityProfile,
+    setDynamicUserModel,
+    upsertUserModelEntry,
+    updateUserModelEntry,
+    removeUserModelEntry,
     clearAllData,
   };
 }

@@ -3,10 +3,15 @@ import { ArrowRight, Loader2, Search, Trash2 } from 'lucide-react';
 import {
   CognitiveDistortionKey,
   CognitiveDistortionReport,
+  CrisisRiskCategory,
   EventAnalysisRecord,
   EventLabLens,
+  SocialPlatform,
 } from '../types/humanos';
-import { detectClientCrisisSignals } from '../hooks/useHumanosStore';
+import {
+  detectClientCrisisCategories,
+  detectClientCrisisSignals,
+} from '../hooks/useHumanosStore';
 import { gatewayFetch } from '../lib/gatewayClient';
 import { CrisisBanner } from './CrisisSupportView';
 
@@ -122,6 +127,15 @@ const COGNITIVE_DISTORTION_GUIDE: {
   },
 ];
 
+const SOCIAL_PLATFORMS: SocialPlatform[] = [
+  'Facebook',
+  'Instagram',
+  'Reddit',
+  'Discord',
+  'LinkedIn',
+  'X/Twitter',
+];
+
 export function EventLabView({
   records,
   distortionReports,
@@ -135,6 +149,7 @@ export function EventLabView({
 }: EventLabViewProps) {
   const [labSection, setLabSection] = useState<'events' | 'distortions'>('events');
   const [lens, setLens] = useState<EventLabLens>('conflict-emotion');
+  const [socialPlatform, setSocialPlatform] = useState<SocialPlatform>('Reddit');
   const [contextCategory, setContextCategory] =
     useState<EventAnalysisRecord['contextCategory']>('Personal');
   const [eventText, setEventText] = useState('');
@@ -191,6 +206,7 @@ export function EventLabView({
           eventDescription: trimmed,
           contextCategory,
           lens,
+          platform: lens === 'digital-check' ? socialPlatform : undefined,
         }),
       });
       const data = await response.json();
@@ -216,6 +232,12 @@ export function EventLabView({
           ? data.reflectiveQuestions
           : [],
         crisisDetected: Boolean(data.crisisDetected || detectClientCrisisSignals(trimmed)),
+        safetyCategories: Array.from(
+          new Set<CrisisRiskCategory>([
+            ...detectClientCrisisCategories(trimmed),
+            ...(Array.isArray(data.detectedRiskCategories) ? data.detectedRiskCategories : []),
+          ])
+        ),
       });
 
       setSelectedId(saved.id);
@@ -256,6 +278,12 @@ export function EventLabView({
         distortions: Array.isArray(data.distortions) ? data.distortions : [],
         balancedPerspective: data.balancedPerspective || '',
         crisisDetected: Boolean(data.crisisDetected || detectClientCrisisSignals(trimmed)),
+        safetyCategories: Array.from(
+          new Set<CrisisRiskCategory>([
+            ...detectClientCrisisCategories(trimmed),
+            ...(Array.isArray(data.detectedRiskCategories) ? data.detectedRiskCategories : []),
+          ])
+        ),
       });
 
       setSelectedDistortionId(saved.id);
@@ -377,6 +405,32 @@ export function EventLabView({
               );
             })}
           </div>
+
+          {/* Supported Social Platforms (when Toxicity & Digital Pause is active) */}
+          {lens === 'digital-check' && (
+            <div className="space-y-1.5 pt-1">
+              <div className="text-xs font-medium text-[#57534E]">Platform</div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {SOCIAL_PLATFORMS.map((plat) => {
+                  const active = socialPlatform === plat;
+                  return (
+                    <button
+                      key={plat}
+                      type="button"
+                      onClick={() => setSocialPlatform(plat)}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                        active
+                          ? 'bg-[#1C1917] text-[#FBF9F5]'
+                          : 'bg-[#FBF9F5] text-[#57534E] border border-[#1C1917]/12 hover:text-[#1C1917]'
+                      }`}
+                    >
+                      {plat}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <textarea
             value={eventText}
@@ -532,7 +586,10 @@ export function EventLabView({
           ) : (
             <div className="space-y-6">
               {activeRecord.crisisDetected && (
-                <CrisisBanner onOpenResources={onOpenCrisisSupport} />
+                <CrisisBanner
+                  detectedCategories={activeRecord.safetyCategories}
+                  onOpenResources={onOpenCrisisSupport}
+                />
               )}
 
               <div className="border border-[#1C1917]/12 rounded-lg bg-[#FBF9F5] p-6 sm:p-8 space-y-6">
@@ -616,8 +673,15 @@ export function EventLabView({
                 {/* Digital Behavior Check Section */}
                 {activeRecord.digitalCheck && activeRecord.digitalCheck.actualIssue && (
                   <div className="border border-[#1C1917]/12 rounded-lg bg-[#F4F0E8]/55 divide-y divide-[#1C1917]/10">
-                    <div className="px-5 py-3 text-xs font-semibold text-[#1E3A5F]">
-                      Toxicity Detector & Digital Pause Analysis
+                    <div className="px-5 py-3 flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-[#1E3A5F]">
+                        Toxicity Detector & Digital Pause Analysis
+                      </span>
+                      {activeRecord.digitalCheck.platform && (
+                        <span className="text-xs text-[#78716C]">
+                          {activeRecord.digitalCheck.platform}
+                        </span>
+                      )}
                     </div>
                     <div className="p-5 grid grid-cols-1 sm:grid-cols-2 gap-5 text-sm">
                       <div className="space-y-1">
@@ -1118,7 +1182,10 @@ export function EventLabView({
               ) : (
                 <div className="space-y-6">
                   {activeDistortionReport.crisisDetected && (
-                    <CrisisBanner onOpenResources={onOpenCrisisSupport} />
+                    <CrisisBanner
+                      detectedCategories={activeDistortionReport.safetyCategories}
+                      onOpenResources={onOpenCrisisSupport}
+                    />
                   )}
 
                   <div className="border border-[#1C1917]/12 rounded-lg bg-[#FBF9F5] p-6 sm:p-8 space-y-6">

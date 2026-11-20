@@ -27,6 +27,7 @@ export default function App() {
     wellbeingCheckIns,
     timelineEvents,
     journalEntries,
+    growthPlans,
     relationships,
     relationshipInsights,
     explainMePortrait,
@@ -49,12 +50,19 @@ export default function App() {
     deleteTimelineEvent,
     addJournalEntry,
     deleteJournalEntry,
+    addGrowthPlan,
+    deleteGrowthPlan,
     addRelationshipNode,
     deleteRelationshipNode,
     addRelationshipInsight,
     deleteRelationshipInsight,
     setExplainMePortrait,
     setPersonalityProfile,
+    dynamicUserModel,
+    setDynamicUserModel,
+    upsertUserModelEntry,
+    updateUserModelEntry,
+    removeUserModelEntry,
     clearAllData,
   } = useHumanosStore();
 
@@ -125,6 +133,7 @@ export default function App() {
             sessions={sessions}
             activeSession={activeSession}
             hypotheses={hypotheses}
+            dynamicUserModel={dynamicUserModel}
             wellbeingCheckIns={wellbeingCheckIns}
             activeEventContext={activeEventContext}
             onClearEventContext={() => setActiveEventContext(null)}
@@ -139,6 +148,7 @@ export default function App() {
             onUpdateHypothesisStatus={(id, status) =>
               updateHypothesis(id, { status })
             }
+            onUpsertUserModelEntry={upsertUserModelEntry}
             onOpenCrisisSupport={() => setActiveTab('crisis')}
             onOpenAtlas={() => setActiveTab('pattern-atlas')}
           />
@@ -166,6 +176,7 @@ export default function App() {
             wellbeingCheckIns={wellbeingCheckIns}
             timelineEvents={timelineEvents}
             journalEntries={journalEntries}
+            growthPlans={growthPlans}
             relationships={relationships}
             relationshipInsights={relationshipInsights}
             explainMePortrait={explainMePortrait}
@@ -179,12 +190,20 @@ export default function App() {
             onDeleteTimelineEvent={deleteTimelineEvent}
             onAddJournalEntry={addJournalEntry}
             onDeleteJournalEntry={deleteJournalEntry}
+            onAddGrowthPlan={addGrowthPlan}
+            onDeleteGrowthPlan={deleteGrowthPlan}
             onAddRelationshipNode={addRelationshipNode}
             onDeleteRelationshipNode={deleteRelationshipNode}
             onAddRelationshipInsight={addRelationshipInsight}
             onDeleteRelationshipInsight={deleteRelationshipInsight}
             onSetExplainMePortrait={setExplainMePortrait}
             onSetPersonalityProfile={setPersonalityProfile}
+            dynamicUserModel={dynamicUserModel}
+            onSetDynamicUserModel={setDynamicUserModel}
+            onUpsertUserModelEntry={upsertUserModelEntry}
+            onUpdateUserModelEntry={updateUserModelEntry}
+            onRemoveUserModelEntry={removeUserModelEntry}
+            onOpenCrisisSupport={() => setActiveTab('crisis')}
             onClearAllData={clearAllData}
           />
         )}

@@ -1819,6 +1819,121 @@ ${contextBundle.slice(0, 11000)}`;
     }
   });
 
+  app.post('/api/agents/report', requireGatewaySession, rateLimitAI, async (req: GatewayRequest, res: Response) => {
+    const startMs = Date.now();
+    const session = req.humanosSession!;
+    const surface = normalizeSurface(req.body?.surface || session.surface);
+    const { kind = 'Holistic Wellbeing & Growth Report', userDisplayName = 'User', contextBundle = '' } = req.body ?? {};
+    const safety = evaluateSafety(String(contextBundle || ''));
+    const route = routeAgents({ endpoint: 'report', safety });
+
+    try {
+      if (!contextBundle || typeof contextBundle !== 'string' || contextBundle.trim().length < 20) {
+        return res.status(400).json({
+          error: 'Record at least one dialogue session, goal, journal entry, or self-assessment before generating a HUMANOS Report.',
+        });
+      }
+
+      const validKinds = new Set([
+        'Holistic Wellbeing & Growth Report',
+        'Behavioral & Cognitive Summary',
+        'Relational & Values Brief',
+        'Session & Goal Progress Digest',
+      ]);
+      const normalizedKind = validKinds.has(String(kind))
+        ? String(kind)
+        : 'Holistic Wellbeing & Growth Report';
+
+      const ai = getGeminiClient();
+      const prompt = `Act as the HUMANOS Report Synthesizer (Human Digital Twin Architect + Wellbeing Monitor + Values Mapper).
+Prepare a longitudinal, non-diagnostic report titled around the requested focus: "${normalizedKind}" for "${String(userDisplayName || 'User').slice(0, 60)}".
+
+Rules:
+- Strictly non-diagnostic: never diagnose conditions or assign permanent clinical labels. Use observant, probabilistic language ("appears", "suggests", "tends toward").
+- Synthesize ONLY from the grounded Users, Sessions, Goals, Journals, Assessments, and Dynamic User Model material provided below. Do not invent facts or scores not present in the context.
+- Keep "keyPatterns" to 3-5 concise bullets and "recommendedNextSteps" to 3 practical, sustainable, values-aligned steps.
+- Include an explicit "ethicalNote" reminding the user that this report is a reflective aid, not medical or psychological advice.
+
+Grounded User Workspace Material:
+${contextBundle.slice(0, 12000)}`;
+
+      const response = await callGeminiWithRetry(() =>
+        ai.models.generateContent({
+          model: MODEL_NAME,
+          contents: prompt,
+          config: {
+            systemInstruction: HUMANOS_KNOWLEDGE_CHARTER,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                executiveSummary: { type: Type.STRING },
+                keyPatterns: { type: Type.ARRAY, items: { type: Type.STRING } },
+                wellbeingTrajectory: { type: Type.STRING },
+                goalsAndValuesAlignment: { type: Type.STRING },
+                recommendedNextSteps: { type: Type.ARRAY, items: { type: Type.STRING } },
+                ethicalNote: { type: Type.STRING },
+              },
+              required: [
+                'title',
+                'executiveSummary',
+                'keyPatterns',
+                'wellbeingTrajectory',
+                'goalsAndValuesAlignment',
+                'recommendedNextSteps',
+                'ethicalNote',
+              ],
+            },
+          },
+        })
+      );
+
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/report',
+        routedAgent: route.primaryAgent,
+        safetyStatus: safety.status,
+        httpStatus: 200,
+        latencyMs: Date.now() - startMs,
+      });
+
+      return res.json({
+        id: `rep_${Date.now()}`,
+        kind: normalizedKind,
+        title: String(parsed.title || normalizedKind).trim(),
+        generatedAt: new Date().toISOString(),
+        executiveSummary: String(parsed.executiveSummary || '').trim(),
+        keyPatterns: Array.isArray(parsed.keyPatterns)
+          ? parsed.keyPatterns.map((p: unknown) => String(p || '').trim()).filter(Boolean)
+          : [],
+        wellbeingTrajectory: String(parsed.wellbeingTrajectory || '').trim(),
+        goalsAndValuesAlignment: String(parsed.goalsAndValuesAlignment || '').trim(),
+        recommendedNextSteps: Array.isArray(parsed.recommendedNextSteps)
+          ? parsed.recommendedNextSteps.map((s: unknown) => String(s || '').trim()).filter(Boolean)
+          : [],
+        ethicalNote:
+          String(parsed.ethicalNote || '').trim() ||
+          'Non-diagnostic reflective synthesis meant to support personal clarity alongside your own judgment and trusted human support.',
+      });
+    } catch (err: unknown) {
+      const formatted = formatApiError(err);
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/report',
+        routedAgent: route.primaryAgent,
+        safetyStatus: safety.status,
+        httpStatus: formatted.status,
+        latencyMs: Date.now() - startMs,
+      });
+      return res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
   // =========================================================================
   // COMPANION SURFACE ENDPOINTS: Browser Extension & Smart Watch Integration
   // =========================================================================

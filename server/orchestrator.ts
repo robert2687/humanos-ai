@@ -273,6 +273,7 @@ export function routeAgents(params: {
     | 'growth-coach'
     | 'crisis-guardian'
     | 'user-model'
+    | 'report'
     | 'extension-pause'
     | 'watch-pulse';
   mode?: string;
@@ -295,6 +296,15 @@ export function routeAgents(params: {
       supportingAgents: ['Personality Analyst', 'Emotional Intelligence Analyst', 'Values Mapper', 'Purpose Discovery'],
       routingRationale:
         'Dynamic User Model synthesis across personality, emotional patterns, values, relationships, goals, fears, and aspirations.',
+    };
+  }
+
+  if (params.endpoint === 'report') {
+    return {
+      primaryAgent: 'Human Digital Twin Architect',
+      supportingAgents: ['Wellbeing Monitor', 'Values Mapper', 'Purpose & Growth Coach', 'Ethics & Trust Guardian'],
+      routingRationale:
+        'Longitudinal HUMANOS Report synthesis across Users, Sessions, Goals, Journals, and Assessments.',
     };
   }
 

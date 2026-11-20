@@ -337,3 +337,78 @@ export interface DynamicUserModel {
   entries: DynamicUserModelEntry[];
 }
 
+export interface UserProfile {
+  id: string;
+  displayName: string;
+  email?: string;
+  focusIntention: string;
+  primaryAreas: GrowthArea[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type GoalStatus = 'active' | 'paused' | 'completed';
+export type GoalHorizon = 'Near-term' | 'Medium-term' | 'Long-term';
+
+export interface GoalMilestone {
+  id: string;
+  label: string;
+  done: boolean;
+}
+
+export interface GoalRecord {
+  id: string;
+  title: string;
+  area: GrowthArea;
+  horizon: GoalHorizon;
+  status: GoalStatus;
+  valuesAnchor: string;
+  nextStep: string;
+  progress: number;
+  milestones: GoalMilestone[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AssessmentInstrument =
+  | 'Resilience Check'
+  | 'Burnout Screen'
+  | 'Anxiety Pattern'
+  | 'Mood & Depression Strain'
+  | 'Self-Esteem Reflection'
+  | 'Values Alignment';
+
+export type AssessmentTier = 'Steady' | 'Moderate Load' | 'Elevated Strain';
+
+export interface AssessmentRecord {
+  id: string;
+  instrument: AssessmentInstrument;
+  createdAt: string;
+  responses: { question: string; score: number }[];
+  compositeScore: number;
+  tier: AssessmentTier;
+  summaryNote: string;
+  reflectionNote: string;
+  crisisDetected: boolean;
+  safetyCategories?: CrisisRiskCategory[];
+}
+
+export type ReportKind =
+  | 'Holistic Wellbeing & Growth Report'
+  | 'Behavioral & Cognitive Summary'
+  | 'Relational & Values Brief'
+  | 'Session & Goal Progress Digest';
+
+export interface HumanosReport {
+  id: string;
+  kind: ReportKind;
+  title: string;
+  generatedAt: string;
+  executiveSummary: string;
+  keyPatterns: string[];
+  wellbeingTrajectory: string;
+  goalsAndValuesAlignment: string;
+  recommendedNextSteps: string[];
+  ethicalNote: string;
+}
+

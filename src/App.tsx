@@ -8,10 +8,15 @@ import { AppTab, Header } from './components/Header';
 import { DialogueView } from './components/DialogueView';
 import { EventLabView } from './components/EventLabView';
 import { PatternAtlasView } from './components/PatternAtlasView';
+import { WorkspaceRecordsView } from './components/WorkspaceRecordsView';
 import { CrisisSupportView } from './components/CrisisSupportView';
 import { PhilosophyView } from './components/PhilosophyView';
 import { useHumanosStore } from './hooks/useHumanosStore';
-import { CognitiveDistortionReport, EventAnalysisRecord } from './types/humanos';
+import {
+  CognitiveDistortionReport,
+  EventAnalysisRecord,
+  GrowthJournalEntry,
+} from './types/humanos';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('dialogue');
@@ -19,6 +24,8 @@ export default function App() {
     useState<EventAnalysisRecord | null>(null);
 
   const {
+    users,
+    activeUser,
     sessions,
     activeSession,
     eventAnalyses,
@@ -28,15 +35,31 @@ export default function App() {
     timelineEvents,
     journalEntries,
     growthPlans,
+    goals,
+    assessments,
+    reports,
     relationships,
     relationshipInsights,
     explainMePortrait,
     personalityProfile,
+    createUserProfile,
+    selectUserProfile,
+    updateUserProfile,
+    deleteUserProfile,
     startNewSession,
     selectSession,
+    renameSession,
     deleteSession,
     setSessionMode,
     appendMessages,
+    addGoal,
+    updateGoal,
+    toggleGoalMilestone,
+    deleteGoal,
+    addAssessment,
+    deleteAssessment,
+    addReport,
+    deleteReport,
     addEventAnalysis,
     deleteEventAnalysis,
     addDistortionReport,
@@ -115,6 +138,28 @@ export default function App() {
       crisisDetected: report.crisisDetected,
     };
     startNewSession('self-reflection', synthRecord.summaryTitle);
+    setActiveEventContext(synthRecord);
+    setActiveTab('dialogue');
+  };
+
+  const handleReflectJournalInDialogue = (entry: GrowthJournalEntry) => {
+    const synthRecord: EventAnalysisRecord = {
+      id: entry.id,
+      createdAt: entry.createdAt,
+      lens: 'future-self',
+      contextCategory: 'Personal',
+      rawEvent: entry.entry,
+      summaryTitle: entry.area ? `Journal · ${entry.area}` : 'Journal Reflection',
+      facts: [entry.prompt],
+      interpretations: [],
+      emotions: [],
+      needs: entry.valueActivated ? [entry.valueActivated] : [],
+      requests: [],
+      actions: [],
+      reflectiveQuestions: [],
+      crisisDetected: false,
+    };
+    startNewSession('growth', synthRecord.summaryTitle);
     setActiveEventContext(synthRecord);
     setActiveTab('dialogue');
   };
@@ -205,6 +250,50 @@ export default function App() {
             onRemoveUserModelEntry={removeUserModelEntry}
             onOpenCrisisSupport={() => setActiveTab('crisis')}
             onClearAllData={clearAllData}
+          />
+        )}
+
+        {activeTab === 'records' && (
+          <WorkspaceRecordsView
+            users={users}
+            activeUser={activeUser}
+            sessions={sessions}
+            activeSession={activeSession}
+            goals={goals}
+            journalEntries={journalEntries}
+            assessments={assessments}
+            reports={reports}
+            wellbeingCheckIns={wellbeingCheckIns}
+            distortionReports={distortionReports}
+            eventAnalyses={eventAnalyses}
+            hypotheses={hypotheses}
+            growthPlans={growthPlans}
+            timelineEvents={timelineEvents}
+            relationships={relationships}
+            dynamicUserModel={dynamicUserModel}
+            onCreateUser={createUserProfile}
+            onSelectUser={selectUserProfile}
+            onUpdateUser={updateUserProfile}
+            onDeleteUser={deleteUserProfile}
+            onStartNewSession={startNewSession}
+            onSelectSessionAndOpenDialogue={(sessionId) => {
+              selectSession(sessionId);
+              setActiveTab('dialogue');
+            }}
+            onRenameSession={renameSession}
+            onDeleteSession={deleteSession}
+            onAddGoal={addGoal}
+            onUpdateGoal={updateGoal}
+            onToggleGoalMilestone={toggleGoalMilestone}
+            onDeleteGoal={deleteGoal}
+            onAddJournalEntry={addJournalEntry}
+            onDeleteJournalEntry={deleteJournalEntry}
+            onReflectJournalInDialogue={handleReflectJournalInDialogue}
+            onAddAssessment={addAssessment}
+            onDeleteAssessment={deleteAssessment}
+            onAddReport={addReport}
+            onDeleteReport={deleteReport}
+            onOpenCrisisSupport={() => setActiveTab('crisis')}
           />
         )}
 

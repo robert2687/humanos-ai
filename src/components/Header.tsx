@@ -1,7 +1,13 @@
 import { useState } from 'react';
 import { Menu, X } from 'lucide-react';
 
-export type AppTab = 'dialogue' | 'event-lab' | 'pattern-atlas' | 'crisis' | 'philosophy';
+export type AppTab =
+  | 'dialogue'
+  | 'event-lab'
+  | 'pattern-atlas'
+  | 'records'
+  | 'crisis'
+  | 'philosophy';
 
 interface HeaderProps {
   activeTab: AppTab;
@@ -13,6 +19,7 @@ const NAV_ITEMS: { id: AppTab; label: string }[] = [
   { id: 'dialogue', label: 'Dialogue' },
   { id: 'event-lab', label: 'Event Lab' },
   { id: 'pattern-atlas', label: 'Pattern Atlas' },
+  { id: 'records', label: 'Records' },
   { id: 'crisis', label: 'Crisis Support' },
   { id: 'philosophy', label: 'Philosophy' },
 ];

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
+  CognitiveDistortionReport,
   DialogueMessage,
   EventAnalysisRecord,
   ExplainMePortrait,
@@ -8,8 +9,11 @@ import {
   LifeTimelineEvent,
   PatternDimension,
   PatternHypothesis,
+  PersonalityAnalystProfile,
   ReflectionMode,
   ReflectionSession,
+  RelationshipArea,
+  RelationshipAreaInsight,
   RelationshipNode,
   WellbeingCheckIn,
 } from '../types/humanos';
@@ -20,12 +24,36 @@ interface HumanosState {
   sessions: ReflectionSession[];
   activeSessionId: string;
   eventAnalyses: EventAnalysisRecord[];
+  distortionReports: CognitiveDistortionReport[];
   hypotheses: PatternHypothesis[];
   wellbeingCheckIns: WellbeingCheckIn[];
   timelineEvents: LifeTimelineEvent[];
   journalEntries: GrowthJournalEntry[];
   relationships: RelationshipNode[];
+  relationshipInsights: RelationshipAreaInsight[];
   explainMePortrait: ExplainMePortrait | null;
+  personalityProfile: PersonalityAnalystProfile | null;
+}
+
+function inferRelationshipArea(role?: string, area?: string): RelationshipArea {
+  if (
+    area === 'Romantic Relationships' ||
+    area === 'Friendships' ||
+    area === 'Family' ||
+    area === 'Work Relationships'
+  ) {
+    return area;
+  }
+  switch (role) {
+    case 'Partner':
+      return 'Romantic Relationships';
+    case 'Friend':
+      return 'Friendships';
+    case 'Family':
+      return 'Family';
+    default:
+      return 'Work Relationships';
+  }
 }
 
 function createId(prefix: string): string {
@@ -78,7 +106,16 @@ function getInitialState(): HumanosState {
                 ...e,
                 lens: e.lens || 'conflict-emotion',
                 requests: Array.isArray(e.requests) ? e.requests : [],
+                behavioralLoop: e.behavioralLoop
+                  ? {
+                      ...e.behavioralLoop,
+                      outcome: e.behavioralLoop.outcome || e.behavioralLoop.consequence || '',
+                    }
+                  : e.behavioralLoop,
               }))
+            : [],
+          distortionReports: Array.isArray(parsed.distortionReports)
+            ? parsed.distortionReports
             : [],
           hypotheses: Array.isArray(parsed.hypotheses)
             ? parsed.hypotheses.map((h) => ({
@@ -91,8 +128,17 @@ function getInitialState(): HumanosState {
             : [],
           timelineEvents: Array.isArray(parsed.timelineEvents) ? parsed.timelineEvents : [],
           journalEntries: Array.isArray(parsed.journalEntries) ? parsed.journalEntries : [],
-          relationships: Array.isArray(parsed.relationships) ? parsed.relationships : [],
+          relationships: Array.isArray(parsed.relationships)
+            ? parsed.relationships.map((r) => ({
+                ...r,
+                area: inferRelationshipArea(r.role, r.area),
+              }))
+            : [],
+          relationshipInsights: Array.isArray(parsed.relationshipInsights)
+            ? parsed.relationshipInsights
+            : [],
           explainMePortrait: parsed.explainMePortrait ?? null,
+          personalityProfile: parsed.personalityProfile ?? null,
         };
       }
     }
@@ -105,12 +151,15 @@ function getInitialState(): HumanosState {
     sessions: [firstSession],
     activeSessionId: firstSession.id,
     eventAnalyses: [],
+    distortionReports: [],
     hypotheses: [],
     wellbeingCheckIns: [],
     timelineEvents: [],
     journalEntries: [],
     relationships: [],
+    relationshipInsights: [],
     explainMePortrait: null,
+    personalityProfile: null,
   };
 }
 
@@ -222,6 +271,29 @@ export function useHumanosStore() {
     setState((prev) => ({
       ...prev,
       eventAnalyses: prev.eventAnalyses.filter((e) => e.id !== id),
+    }));
+  }, []);
+
+  const addDistortionReport = useCallback(
+    (report: Omit<CognitiveDistortionReport, 'id' | 'createdAt'>) => {
+      const fullReport: CognitiveDistortionReport = {
+        ...report,
+        id: createId('cog'),
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        distortionReports: [fullReport, ...prev.distortionReports],
+      }));
+      return fullReport;
+    },
+    []
+  );
+
+  const deleteDistortionReport = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      distortionReports: prev.distortionReports.filter((r) => r.id !== id),
     }));
   }, []);
 
@@ -373,10 +445,40 @@ export function useHumanosStore() {
     }));
   }, []);
 
+  const addRelationshipInsight = useCallback(
+    (insight: Omit<RelationshipAreaInsight, 'id' | 'createdAt'>) => {
+      const entry: RelationshipAreaInsight = {
+        ...insight,
+        id: createId('relins'),
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        relationshipInsights: [entry, ...prev.relationshipInsights],
+      }));
+      return entry;
+    },
+    []
+  );
+
+  const deleteRelationshipInsight = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      relationshipInsights: prev.relationshipInsights.filter((i) => i.id !== id),
+    }));
+  }, []);
+
   const setExplainMePortrait = useCallback((portrait: ExplainMePortrait | null) => {
     setState((prev) => ({
       ...prev,
       explainMePortrait: portrait,
+    }));
+  }, []);
+
+  const setPersonalityProfile = useCallback((profile: PersonalityAnalystProfile | null) => {
+    setState((prev) => ({
+      ...prev,
+      personalityProfile: profile,
     }));
   }, []);
 
@@ -386,12 +488,15 @@ export function useHumanosStore() {
       sessions: [fresh],
       activeSessionId: fresh.id,
       eventAnalyses: [],
+      distortionReports: [],
       hypotheses: [],
       wellbeingCheckIns: [],
       timelineEvents: [],
       journalEntries: [],
       relationships: [],
+      relationshipInsights: [],
       explainMePortrait: null,
+      personalityProfile: null,
     };
     setState(clean);
   }, []);
@@ -400,12 +505,15 @@ export function useHumanosStore() {
     sessions: state.sessions,
     activeSession,
     eventAnalyses: state.eventAnalyses,
+    distortionReports: state.distortionReports,
     hypotheses: state.hypotheses,
     wellbeingCheckIns: state.wellbeingCheckIns,
     timelineEvents: state.timelineEvents,
     journalEntries: state.journalEntries,
     relationships: state.relationships,
+    relationshipInsights: state.relationshipInsights,
     explainMePortrait: state.explainMePortrait,
+    personalityProfile: state.personalityProfile,
     startNewSession,
     selectSession,
     deleteSession,
@@ -413,6 +521,8 @@ export function useHumanosStore() {
     appendMessages,
     addEventAnalysis,
     deleteEventAnalysis,
+    addDistortionReport,
+    deleteDistortionReport,
     addHypothesis,
     updateHypothesis,
     removeHypothesis,
@@ -424,7 +534,10 @@ export function useHumanosStore() {
     deleteJournalEntry,
     addRelationshipNode,
     deleteRelationshipNode,
+    addRelationshipInsight,
+    deleteRelationshipInsight,
     setExplainMePortrait,
+    setPersonalityProfile,
     clearAllData,
   };
 }

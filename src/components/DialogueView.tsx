@@ -22,6 +22,7 @@ import {
   WellbeingCheckIn,
 } from '../types/humanos';
 import { detectClientCrisisSignals } from '../hooks/useHumanosStore';
+import { gatewayFetch } from '../lib/gatewayClient';
 import { CrisisBanner } from './CrisisSupportView';
 
 interface DialogueViewProps {
@@ -60,12 +61,12 @@ const MODE_OPTIONS: { id: ReflectionMode; label: string; focus: string }[] = [
   {
     id: 'self-reflection',
     label: 'Self-Reflection',
-    focus: 'Explore Trigger -> Thought -> Emotion -> Behavior loops and cognitive habits.',
+    focus: 'Explore Trigger → Thought → Emotion → Behavior → Outcome chains and cognitive habits.',
   },
   {
     id: 'relationship',
     label: 'Relationships',
-    focus: 'Examine communication dynamics and unspoken needs without taking sides.',
+    focus: 'Examine romantic relationships, friendships, family, and work dynamics without taking sides.',
   },
   {
     id: 'growth',
@@ -207,9 +208,8 @@ export function DialogueView({
     setIsSending(true);
 
     try {
-      const response = await fetch('/api/dialogue', {
+      const response = await gatewayFetch('/api/dialogue', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: nextHistory.map((m) => ({ role: m.role, content: m.content })),
           mode: effectiveMode,

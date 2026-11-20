@@ -11,7 +11,7 @@ import { PatternAtlasView } from './components/PatternAtlasView';
 import { CrisisSupportView } from './components/CrisisSupportView';
 import { PhilosophyView } from './components/PhilosophyView';
 import { useHumanosStore } from './hooks/useHumanosStore';
-import { EventAnalysisRecord } from './types/humanos';
+import { CognitiveDistortionReport, EventAnalysisRecord } from './types/humanos';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('dialogue');
@@ -22,12 +22,15 @@ export default function App() {
     sessions,
     activeSession,
     eventAnalyses,
+    distortionReports,
     hypotheses,
     wellbeingCheckIns,
     timelineEvents,
     journalEntries,
     relationships,
+    relationshipInsights,
     explainMePortrait,
+    personalityProfile,
     startNewSession,
     selectSession,
     deleteSession,
@@ -35,6 +38,8 @@ export default function App() {
     appendMessages,
     addEventAnalysis,
     deleteEventAnalysis,
+    addDistortionReport,
+    deleteDistortionReport,
     addHypothesis,
     updateHypothesis,
     removeHypothesis,
@@ -46,7 +51,10 @@ export default function App() {
     deleteJournalEntry,
     addRelationshipNode,
     deleteRelationshipNode,
+    addRelationshipInsight,
+    deleteRelationshipInsight,
     setExplainMePortrait,
+    setPersonalityProfile,
     clearAllData,
   } = useHumanosStore();
 
@@ -72,6 +80,34 @@ export default function App() {
 
     startNewSession(mode, record.summaryTitle);
     setActiveEventContext(record);
+    setActiveTab('dialogue');
+  };
+
+  const handleDiscussDistortionInDialogue = (report: CognitiveDistortionReport) => {
+    const activeNames = report.distortions
+      .filter((d) => d.present)
+      .map((d) => d.name)
+      .join(', ');
+    const synthRecord: EventAnalysisRecord = {
+      id: report.id,
+      createdAt: report.createdAt,
+      lens: 'behavioral-loop',
+      contextCategory: 'Personal',
+      rawEvent: report.rawThought,
+      summaryTitle: report.thoughtSummary || 'Cognitive Pattern Reflection',
+      facts: [],
+      interpretations: activeNames ? [`Possible cognitive patterns noticed: ${activeNames}`] : [],
+      emotions: report.emotionalUndercurrent
+        ? [{ name: 'Undercurrent', signal: report.emotionalUndercurrent }]
+        : [],
+      needs: [],
+      requests: [],
+      actions: report.balancedPerspective ? [report.balancedPerspective] : [],
+      reflectiveQuestions: [],
+      crisisDetected: report.crisisDetected,
+    };
+    startNewSession('self-reflection', synthRecord.summaryTitle);
+    setActiveEventContext(synthRecord);
     setActiveTab('dialogue');
   };
 
@@ -111,9 +147,13 @@ export default function App() {
         {activeTab === 'event-lab' && (
           <EventLabView
             records={eventAnalyses}
+            distortionReports={distortionReports}
             onSaveRecord={addEventAnalysis}
             onDeleteRecord={deleteEventAnalysis}
+            onSaveDistortionReport={addDistortionReport}
+            onDeleteDistortionReport={deleteDistortionReport}
             onDiscussInDialogue={handleDiscussEventInDialogue}
+            onDiscussDistortionInDialogue={handleDiscussDistortionInDialogue}
             onOpenCrisisSupport={() => setActiveTab('crisis')}
           />
         )}
@@ -127,7 +167,9 @@ export default function App() {
             timelineEvents={timelineEvents}
             journalEntries={journalEntries}
             relationships={relationships}
+            relationshipInsights={relationshipInsights}
             explainMePortrait={explainMePortrait}
+            personalityProfile={personalityProfile}
             onAddHypothesis={addHypothesis}
             onUpdateHypothesis={updateHypothesis}
             onRemoveHypothesis={removeHypothesis}
@@ -139,7 +181,10 @@ export default function App() {
             onDeleteJournalEntry={deleteJournalEntry}
             onAddRelationshipNode={addRelationshipNode}
             onDeleteRelationshipNode={deleteRelationshipNode}
+            onAddRelationshipInsight={addRelationshipInsight}
+            onDeleteRelationshipInsight={deleteRelationshipInsight}
             onSetExplainMePortrait={setExplainMePortrait}
+            onSetPersonalityProfile={setPersonalityProfile}
             onClearAllData={clearAllData}
           />
         )}
@@ -150,6 +195,7 @@ export default function App() {
           <PhilosophyView
             onStartDialogue={() => setActiveTab('dialogue')}
             onOpenEventLab={() => setActiveTab('event-lab')}
+            onSyncWatchPulse={addWellbeingCheckIn}
           />
         )}
       </main>

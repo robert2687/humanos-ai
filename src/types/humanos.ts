@@ -71,13 +71,43 @@ export interface AnalyzedEmotion {
   signal: string;
 }
 
+export type CognitiveDistortionKey =
+  | 'catastrophizing'
+  | 'personalization'
+  | 'overgeneralization'
+  | 'emotional reasoning'
+  | 'mind reading';
+
+export interface CognitiveDistortionCheck {
+  key: CognitiveDistortionKey;
+  name: string;
+  present: boolean;
+  evidenceSignal: string;
+  compassionateContext: string;
+  groundedReframe: string;
+}
+
+export interface CognitiveDistortionReport {
+  id: string;
+  createdAt: string;
+  rawThought: string;
+  thoughtSummary: string;
+  emotionalUndercurrent: string;
+  distortions: CognitiveDistortionCheck[];
+  balancedPerspective: string;
+  crisisDetected: boolean;
+}
+
 export interface BehavioralLoopAnalysis {
   trigger: string;
   thought: string;
   emotion: string;
   behavior: string;
-  consequence: string;
+  outcome: string;
+  consequence?: string;
+  interruptionPoint?: string;
   cognitivePatterns: string[];
+  distortionChecks?: CognitiveDistortionCheck[];
   awarenessNote: string;
 }
 
@@ -164,15 +194,36 @@ export interface GrowthJournalEntry {
   valueActivated: string;
 }
 
+export type RelationshipArea =
+  | 'Romantic Relationships'
+  | 'Friendships'
+  | 'Family'
+  | 'Work Relationships';
+
 export interface RelationshipNode {
   id: string;
   name: string;
+  area: RelationshipArea;
   role: 'Partner' | 'Family' | 'Friend' | 'Colleague' | 'Mentor' | 'Community';
   closeness: number; // 1 to 5
   tension: number; // 1 to 5
   dynamicNote: string;
   sharedNeed: string;
   updatedAt: string;
+}
+
+export interface RelationshipAreaInsight {
+  id: string;
+  createdAt: string;
+  area: RelationshipArea;
+  situation: string;
+  dynamicSummary: string;
+  yourPerspectiveAndNeeds: string;
+  otherPerspectiveAndNeeds: string;
+  communicationPattern: string;
+  boundaryOrRequest: string;
+  reflectionQuestion: string;
+  crisisDetected: boolean;
 }
 
 export interface ExplainMePortrait {
@@ -182,4 +233,14 @@ export interface ExplainMePortrait {
   potentialBlindSpots: { pattern: string; gentleReframe: string }[];
   resilienceStrengths: string[];
   purposeThread: string;
+}
+
+export interface PersonalityAnalystProfile {
+  generatedAt: string;
+  dominant_traits: string[];
+  values: string[];
+  motivators: string[];
+  blind_spots: string[];
+  strengths: string[];
+  growth_opportunities: string[];
 }

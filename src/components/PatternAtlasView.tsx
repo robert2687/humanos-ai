@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Check, Compass, Download, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { gatewayFetch } from '../lib/gatewayClient';
 import {
   EventAnalysisRecord,
   ExplainMePortrait,
@@ -8,7 +9,10 @@ import {
   LifeTimelineEvent,
   PatternDimension,
   PatternHypothesis,
+  PersonalityAnalystProfile,
   ReflectionSession,
+  RelationshipArea,
+  RelationshipAreaInsight,
   RelationshipNode,
   WellbeingCheckIn,
 } from '../types/humanos';
@@ -21,7 +25,9 @@ interface PatternAtlasViewProps {
   timelineEvents: LifeTimelineEvent[];
   journalEntries: GrowthJournalEntry[];
   relationships: RelationshipNode[];
+  relationshipInsights: RelationshipAreaInsight[];
   explainMePortrait: ExplainMePortrait | null;
+  personalityProfile: PersonalityAnalystProfile | null;
   onAddHypothesis: (input: {
     dimension: PatternDimension;
     statement: string;
@@ -42,7 +48,12 @@ interface PatternAtlasViewProps {
   onDeleteJournalEntry: (id: string) => void;
   onAddRelationshipNode: (input: Omit<RelationshipNode, 'id' | 'updatedAt'>) => void;
   onDeleteRelationshipNode: (id: string) => void;
+  onAddRelationshipInsight: (
+    insight: Omit<RelationshipAreaInsight, 'id' | 'createdAt'>
+  ) => RelationshipAreaInsight;
+  onDeleteRelationshipInsight: (id: string) => void;
   onSetExplainMePortrait: (portrait: ExplainMePortrait | null) => void;
+  onSetPersonalityProfile: (profile: PersonalityAnalystProfile | null) => void;
   onClearAllData: () => void;
 }
 
@@ -92,10 +103,37 @@ const JOURNAL_PROMPTS = [
   'What gives your days a sense of meaning or purpose right now?',
 ];
 
+const RELATIONSHIP_AREAS: {
+  area: RelationshipArea;
+  defaultRole: RelationshipNode['role'];
+  focus: string;
+}[] = [
+  {
+    area: 'Romantic Relationships',
+    defaultRole: 'Partner',
+    focus: 'Attachment safety, emotional intimacy, bids for connection, and shared expectations.',
+  },
+  {
+    area: 'Friendships',
+    defaultRole: 'Friend',
+    focus: 'Reciprocity, trust repair, unspoken expectations, and honest boundaries.',
+  },
+  {
+    area: 'Family',
+    defaultRole: 'Family',
+    focus: 'Inherited roles, individuation vs. obligation, and respectful emotional limits.',
+  },
+  {
+    area: 'Work Relationships',
+    defaultRole: 'Colleague',
+    focus: 'Psychological safety, role clarity, authority/peer communication, and workload boundaries.',
+  },
+];
+
 const RELATIONSHIP_ROLES: RelationshipNode['role'][] = [
   'Partner',
-  'Family',
   'Friend',
+  'Family',
   'Colleague',
   'Mentor',
   'Community',
@@ -114,7 +152,9 @@ export function PatternAtlasView({
   timelineEvents,
   journalEntries,
   relationships,
+  relationshipInsights,
   explainMePortrait,
+  personalityProfile,
   onAddHypothesis,
   onUpdateHypothesis,
   onRemoveHypothesis,
@@ -126,7 +166,10 @@ export function PatternAtlasView({
   onDeleteJournalEntry,
   onAddRelationshipNode,
   onDeleteRelationshipNode,
+  onAddRelationshipInsight,
+  onDeleteRelationshipInsight,
   onSetExplainMePortrait,
+  onSetPersonalityProfile,
   onClearAllData,
 }: PatternAtlasViewProps) {
   const [atlasSection, setAtlasSection] = useState<
@@ -135,6 +178,8 @@ export function PatternAtlasView({
   const [dimensionFilter, setDimensionFilter] = useState<'All' | PatternDimension>('All');
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const [isExplaining, setIsExplaining] = useState(false);
+  const [isProfiling, setIsProfiling] = useState(false);
+  const [showAnalystJson, setShowAnalystJson] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newDimension, setNewDimension] = useState<PatternDimension>('Values');
@@ -178,9 +223,11 @@ export function PatternAtlasView({
   const [journalText, setJournalText] = useState('');
   const [journalValue, setJournalValue] = useState('');
 
-  // Relationship Graph Form
+  // Relationship Graph Form & Area Specialist
+  const [relationshipAreaFilter, setRelationshipAreaFilter] = useState<'All' | RelationshipArea>('All');
   const [relForm, setRelForm] = useState<{
     name: string;
+    area: RelationshipArea;
     role: RelationshipNode['role'];
     closeness: number;
     tension: number;
@@ -188,12 +235,21 @@ export function PatternAtlasView({
     sharedNeed: string;
   }>({
     name: '',
+    area: 'Romantic Relationships',
     role: 'Partner',
     closeness: 4,
     tension: 2,
     dynamicNote: '',
     sharedNeed: '',
   });
+  const [relInsightArea, setRelInsightArea] = useState<RelationshipArea>('Romantic Relationships');
+  const [relSituation, setRelSituation] = useState('');
+  const [isAnalyzingRel, setIsAnalyzingRel] = useState(false);
+
+  const filteredRelationships = useMemo(() => {
+    if (relationshipAreaFilter === 'All') return relationships;
+    return relationships.filter((r) => r.area === relationshipAreaFilter);
+  }, [relationships, relationshipAreaFilter]);
 
   const visibleHypotheses = hypotheses.filter((h) => {
     if (h.status === 'dismissed') return false;
@@ -263,7 +319,7 @@ export function PatternAtlasView({
       .slice(0, 10)
       .map(
         (r) =>
-          `[Relationship ${r.name} (${r.role}) Closeness=${r.closeness}/5 Tension=${r.tension}/5]: ${r.dynamicNote} | Need: ${r.sharedNeed}`
+          `[Relationship ${r.name} (${r.area} / ${r.role}) Closeness=${r.closeness}/5 Tension=${r.tension}/5]: ${r.dynamicNote} | Need: ${r.sharedNeed}`
       )
       .join('\n');
 
@@ -305,9 +361,8 @@ export function PatternAtlasView({
         );
       }
 
-      const response = await fetch('/api/synthesize-patterns', {
+      const response = await gatewayFetch('/api/synthesize-patterns', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           reflectionsSummary: combined,
           wellbeingSummary,
@@ -357,9 +412,8 @@ export function PatternAtlasView({
         );
       }
 
-      const response = await fetch('/api/explain-me', {
+      const response = await gatewayFetch('/api/explain-me', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contextBundle: combined }),
       });
       const data = await response.json();
@@ -372,6 +426,41 @@ export function PatternAtlasView({
       setActionError(err instanceof Error ? err.message : 'Explain Me Mode failed.');
     } finally {
       setIsExplaining(false);
+    }
+  };
+
+  const handleRunPersonalityAnalyst = async () => {
+    setIsProfiling(true);
+    setActionError(null);
+
+    try {
+      const { fullBundle } = buildFullContextBundle();
+      const hypText = hypotheses
+        .filter((h) => h.status !== 'dismissed')
+        .map((h) => `[${h.dimension}]: ${h.statement}`)
+        .join('\n');
+
+      const combined = [hypText, fullBundle].filter(Boolean).join('\n\n');
+      if (combined.trim().length < 20) {
+        throw new Error(
+          'Share at least one reflection, event analysis, timeline milestone, or wellbeing check-in before running Personality Analyst.'
+        );
+      }
+
+      const response = await gatewayFetch('/api/agents/personality-analyst', {
+        method: 'POST',
+        body: JSON.stringify({ contextBundle: combined }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Could not generate Personality Analyst profile.');
+      }
+      onSetPersonalityProfile(data as PersonalityAnalystProfile);
+      setAtlasSection('model');
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : 'Personality Analyst failed.');
+    } finally {
+      setIsProfiling(false);
     }
   };
 
@@ -432,20 +521,73 @@ export function PatternAtlasView({
     if (!relForm.name.trim()) return;
     onAddRelationshipNode({
       name: relForm.name.trim(),
+      area: relForm.area,
       role: relForm.role,
       closeness: relForm.closeness,
       tension: relForm.tension,
       dynamicNote: relForm.dynamicNote.trim(),
       sharedNeed: relForm.sharedNeed.trim(),
     });
-    setRelForm({
+    setRelForm((prev) => ({
       name: '',
-      role: 'Partner',
+      area: prev.area,
+      role: prev.role,
       closeness: 4,
       tension: 2,
       dynamicNote: '',
       sharedNeed: '',
-    });
+    }));
+  };
+
+  const handleAnalyzeRelationshipArea = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = relSituation.trim();
+    if (trimmed.length < 10 || isAnalyzingRel) return;
+
+    setIsAnalyzingRel(true);
+    setActionError(null);
+
+    try {
+      const mappedNodesSummary = relationships
+        .filter((r) => r.area === relInsightArea)
+        .map(
+          (r) =>
+            `${r.name} (${r.role}): Closeness ${r.closeness}/5, Tension ${r.tension}/5, Note: ${r.dynamicNote || 'n/a'}, Need: ${r.sharedNeed || 'n/a'}`
+        )
+        .join('\n');
+
+      const response = await gatewayFetch('/api/agents/relationship-analyst', {
+        method: 'POST',
+        body: JSON.stringify({
+          area: relInsightArea,
+          situationOrDynamic: trimmed,
+          mappedNodesSummary,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Unable to analyze this relationship dynamic.');
+      }
+
+      onAddRelationshipInsight({
+        area: relInsightArea,
+        situation: trimmed,
+        dynamicSummary: data.dynamicSummary || '',
+        yourPerspectiveAndNeeds: data.yourPerspectiveAndNeeds || '',
+        otherPerspectiveAndNeeds: data.otherPerspectiveAndNeeds || '',
+        communicationPattern: data.communicationPattern || '',
+        boundaryOrRequest: data.boundaryOrRequest || '',
+        reflectionQuestion: data.reflectionQuestion || '',
+        crisisDetected: Boolean(data.crisisDetected),
+      });
+      setRelSituation('');
+    } catch (err: unknown) {
+      setActionError(
+        err instanceof Error ? err.message : 'Unable to analyze this relationship dynamic.'
+      );
+    } finally {
+      setIsAnalyzingRel(false);
+    }
   };
 
   const handleExportAtlas = () => {
@@ -519,6 +661,22 @@ export function PatternAtlasView({
                 </>
               ) : (
                 <span>Explain Me Mode</span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleRunPersonalityAnalyst}
+              disabled={isProfiling}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-[#1C1917]/20 text-[#1C1917] rounded-md hover:bg-[#EBE6DF] disabled:opacity-50 transition-colors whitespace-nowrap"
+            >
+              {isProfiling ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Profiling...</span>
+                </>
+              ) : (
+                <span>Personality Analyst</span>
               )}
             </button>
 
@@ -635,6 +793,109 @@ export function PatternAtlasView({
       {/* SECTION 1: PERSONALITY DNA & EXPLAIN ME MODE */}
       {atlasSection === 'model' && (
         <div className="space-y-8">
+          {/* Structured Personality Analyst Output */}
+          {personalityProfile && (
+            <section className="border border-[#1C1917]/12 rounded-lg bg-[#FBF9F5] p-6 sm:p-8 space-y-6">
+              <div className="flex flex-wrap items-baseline justify-between gap-3 border-b border-[#1C1917]/10 pb-4">
+                <div>
+                  <div className="text-xs font-medium text-[#1E3A5F]">
+                    Personality Analyst · Behavioral Profiling & Growth Detection
+                  </div>
+                  <h2 className="font-serif text-2xl font-medium text-[#1C1917] mt-1">
+                    Structured Personality & Values Profile
+                  </h2>
+                </div>
+                <div className="flex items-center gap-4">
+                  <span className="font-mono text-xs text-[#78716C] tabular-nums">
+                    {new Date(personalityProfile.generatedAt).toLocaleDateString()}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowAnalystJson((prev) => !prev)}
+                    className="text-xs font-medium text-[#1E3A5F] hover:underline underline-offset-4 whitespace-nowrap"
+                  >
+                    {showAnalystJson ? 'Hide JSON' : 'View JSON'}
+                  </button>
+                </div>
+              </div>
+
+              {showAnalystJson ? (
+                <pre className="p-4 rounded-md bg-[#F4F0E8] border border-[#1C1917]/10 font-mono text-xs text-[#1C1917] overflow-x-auto leading-relaxed">
+                  {JSON.stringify(
+                    {
+                      dominant_traits: personalityProfile.dominant_traits,
+                      values: personalityProfile.values,
+                      motivators: personalityProfile.motivators,
+                      blind_spots: personalityProfile.blind_spots,
+                    },
+                    null,
+                    2
+                  )}
+                </pre>
+              ) : null}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 text-sm">
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-[#1E3A5F]">Dominant Traits</div>
+                  <ul className="space-y-1.5 text-[#292524]">
+                    {personalityProfile.dominant_traits.map((item, idx) => (
+                      <li key={idx} className="leading-relaxed">{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-[#1E3A5F]">Values</div>
+                  <ul className="space-y-1.5 text-[#292524]">
+                    {personalityProfile.values.map((item, idx) => (
+                      <li key={idx} className="leading-relaxed">{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-[#1E3A5F]">Motivators</div>
+                  <ul className="space-y-1.5 text-[#292524]">
+                    {personalityProfile.motivators.map((item, idx) => (
+                      <li key={idx} className="leading-relaxed">{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-[#9A3412]">Blind Spots</div>
+                  <ul className="space-y-1.5 text-[#292524]">
+                    {personalityProfile.blind_spots.map((item, idx) => (
+                      <li key={idx} className="leading-relaxed">{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+
+              {(personalityProfile.strengths?.length > 0 ||
+                personalityProfile.growth_opportunities?.length > 0) && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-[#1C1917]/10 pt-5 text-sm">
+                  <div className="space-y-1.5">
+                    <div className="text-xs font-semibold text-[#1C1917]">Mapped Strengths</div>
+                    <ul className="space-y-1 text-[#57534E]">
+                      {personalityProfile.strengths.map((s, idx) => (
+                        <li key={idx} className="leading-relaxed">{s}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="text-xs font-semibold text-[#1C1917]">Growth Opportunities</div>
+                    <ul className="space-y-1 text-[#57534E]">
+                      {personalityProfile.growth_opportunities.map((g, idx) => (
+                        <li key={idx} className="leading-relaxed">{g}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+
           {/* Explain Me Portrait Card */}
           {explainMePortrait && (
             <section className="border border-[#1E3A5F]/20 rounded-lg bg-[#F4F0E8]/60 p-6 sm:p-8 space-y-6">
@@ -1334,218 +1595,437 @@ export function PatternAtlasView({
 
       {/* SECTION 4: RELATIONSHIP GRAPH */}
       {atlasSection === 'relationships' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          {/* Form + Constellation */}
-          <div className="lg:col-span-5 space-y-6">
-            <form
-              onSubmit={handleSaveRelationship}
-              className="border border-[#1C1917]/12 rounded-lg bg-[#F4F0E8]/55 p-6 space-y-4"
-            >
-              <div className="space-y-1">
-                <h2 className="font-serif text-xl font-medium text-[#1C1917]">
-                  Map a Relational Dynamic
-                </h2>
-                <p className="text-xs text-[#57534E]">
-                  Observe closeness, recurring tension, and unmet or shared needs without blame.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <input
-                  type="text"
-                  value={relForm.name}
-                  onChange={(e) => setRelForm((p) => ({ ...p, name: e.target.value }))}
-                  placeholder="Name or initials"
-                  className="px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
-                />
-                <select
-                  value={relForm.role}
-                  onChange={(e) =>
-                    setRelForm((p) => ({ ...p, role: e.target.value as RelationshipNode['role'] }))
-                  }
-                  className="px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
+        <div className="space-y-8">
+          {/* Four Core Relationship Areas Overview & Filter */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {RELATIONSHIP_AREAS.map((item) => {
+              const count = relationships.filter((r) => r.area === item.area).length;
+              const active = relationshipAreaFilter === item.area;
+              return (
+                <button
+                  key={item.area}
+                  type="button"
+                  onClick={() => {
+                    const next = active ? 'All' : item.area;
+                    setRelationshipAreaFilter(next);
+                    if (!active) {
+                      setRelInsightArea(item.area);
+                      setRelForm((p) => ({
+                        ...p,
+                        area: item.area,
+                        role: item.defaultRole,
+                      }));
+                    }
+                  }}
+                  className={`text-left p-4 rounded-lg border transition-colors space-y-1.5 ${
+                    active
+                      ? 'bg-[#EBE6DF] border-[#1E3A5F]'
+                      : 'bg-[#F4F0E8]/55 border-[#1C1917]/10 hover:bg-[#F4F0E8]'
+                  }`}
                 >
-                  {RELATIONSHIP_ROLES.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 text-xs">
-                <div className="space-y-1">
-                  <div className="flex justify-between">
-                    <span className="font-medium text-[#1C1917]">Closeness</span>
-                    <span className="font-mono tabular-nums text-[#1E3A5F]">{relForm.closeness}/5</span>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="font-serif text-base font-medium text-[#1C1917]">
+                      {item.area}
+                    </span>
+                    <span className="font-mono text-xs text-[#1E3A5F] tabular-nums">
+                      {count}
+                    </span>
                   </div>
-                  <input
-                    type="range"
-                    min={1}
-                    max={5}
-                    value={relForm.closeness}
-                    onChange={(e) => setRelForm((p) => ({ ...p, closeness: Number(e.target.value) }))}
-                    className="w-full accent-[#1E3A5F]"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <div className="flex justify-between">
-                    <span className="font-medium text-[#1C1917]">Recurring Tension</span>
-                    <span className="font-mono tabular-nums text-[#9A3412]">{relForm.tension}/5</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={1}
-                    max={5}
-                    value={relForm.tension}
-                    onChange={(e) => setRelForm((p) => ({ ...p, tension: Number(e.target.value) }))}
-                    className="w-full accent-[#9A3412]"
-                  />
-                </div>
-              </div>
-
-              <input
-                type="text"
-                value={relForm.dynamicNote}
-                onChange={(e) => setRelForm((p) => ({ ...p, dynamicNote: e.target.value }))}
-                placeholder="Communication or attachment pattern observed..."
-                className="w-full px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
-              />
-              <input
-                type="text"
-                value={relForm.sharedNeed}
-                onChange={(e) => setRelForm((p) => ({ ...p, sharedNeed: e.target.value }))}
-                placeholder="Core need or boundary at play (e.g. Clarity, Safety)..."
-                className="w-full px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
-              />
-
-              <button
-                type="submit"
-                disabled={!relForm.name.trim()}
-                className="w-full py-2 px-4 text-sm font-medium bg-[#1E3A5F] text-[#FBF9F5] rounded-md hover:bg-[#162C49] disabled:opacity-45"
-              >
-                Add to Relationship Graph
-              </button>
-            </form>
+                  <p className="text-xs text-[#57534E] leading-relaxed">{item.focus}</p>
+                </button>
+              );
+            })}
           </div>
 
-          {/* Constellation SVG & Dynamics Ledger */}
-          <div className="lg:col-span-7 space-y-6">
-            <div className="border border-[#1C1917]/10 rounded-lg bg-[#FBF9F5] p-6 space-y-4">
-              <div className="flex items-baseline justify-between">
-                <h2 className="font-serif text-xl font-medium text-[#1C1917]">
-                  Relational Constellation
-                </h2>
-                <span className="text-xs text-[#78716C]">
-                  Proximity reflects closeness · Dashed line reflects tension
-                </span>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            {/* Form + Area Specialist */}
+            <div className="lg:col-span-5 space-y-6">
+              <form
+                onSubmit={handleSaveRelationship}
+                className="border border-[#1C1917]/12 rounded-lg bg-[#F4F0E8]/55 p-6 space-y-4"
+              >
+                <div className="space-y-1">
+                  <h2 className="font-serif text-xl font-medium text-[#1C1917]">
+                    Map a Relational Dynamic
+                  </h2>
+                  <p className="text-xs text-[#57534E]">
+                    Place people across your four life areas and observe closeness, tension, and core needs without blame.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-[#57534E]">
+                    Relationship Area
+                  </label>
+                  <select
+                    value={relForm.area}
+                    onChange={(e) => {
+                      const nextArea = e.target.value as RelationshipArea;
+                      const spec = RELATIONSHIP_AREAS.find((a) => a.area === nextArea);
+                      setRelForm((p) => ({
+                        ...p,
+                        area: nextArea,
+                        role: spec ? spec.defaultRole : p.role,
+                      }));
+                    }}
+                    className="w-full px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
+                  >
+                    {RELATIONSHIP_AREAS.map((a) => (
+                      <option key={a.area} value={a.area}>
+                        {a.area}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <input
+                    type="text"
+                    value={relForm.name}
+                    onChange={(e) => setRelForm((p) => ({ ...p, name: e.target.value }))}
+                    placeholder="Name or initials"
+                    className="px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
+                  />
+                  <select
+                    value={relForm.role}
+                    onChange={(e) =>
+                      setRelForm((p) => ({ ...p, role: e.target.value as RelationshipNode['role'] }))
+                    }
+                    className="px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
+                  >
+                    {RELATIONSHIP_ROLES.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 text-xs">
+                  <div className="space-y-1">
+                    <div className="flex justify-between">
+                      <span className="font-medium text-[#1C1917]">Closeness</span>
+                      <span className="font-mono tabular-nums text-[#1E3A5F]">{relForm.closeness}/5</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={5}
+                      value={relForm.closeness}
+                      onChange={(e) => setRelForm((p) => ({ ...p, closeness: Number(e.target.value) }))}
+                      className="w-full accent-[#1E3A5F]"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex justify-between">
+                      <span className="font-medium text-[#1C1917]">Recurring Tension</span>
+                      <span className="font-mono tabular-nums text-[#9A3412]">{relForm.tension}/5</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={5}
+                      value={relForm.tension}
+                      onChange={(e) => setRelForm((p) => ({ ...p, tension: Number(e.target.value) }))}
+                      className="w-full accent-[#9A3412]"
+                    />
+                  </div>
+                </div>
+
+                <input
+                  type="text"
+                  value={relForm.dynamicNote}
+                  onChange={(e) => setRelForm((p) => ({ ...p, dynamicNote: e.target.value }))}
+                  placeholder="Communication or attachment pattern observed..."
+                  className="w-full px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
+                />
+                <input
+                  type="text"
+                  value={relForm.sharedNeed}
+                  onChange={(e) => setRelForm((p) => ({ ...p, sharedNeed: e.target.value }))}
+                  placeholder="Core need or boundary at play (e.g. Clarity, Safety)..."
+                  className="w-full px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
+                />
+
+                <button
+                  type="submit"
+                  disabled={!relForm.name.trim()}
+                  className="w-full py-2 px-4 text-sm font-medium bg-[#1E3A5F] text-[#FBF9F5] rounded-md hover:bg-[#162C49] disabled:opacity-45"
+                >
+                  Add to Relationship Graph
+                </button>
+              </form>
+
+              {/* AI Relationship Area Analyst */}
+              <form
+                onSubmit={handleAnalyzeRelationshipArea}
+                className="border border-[#1C1917]/12 rounded-lg bg-[#FBF9F5] p-6 space-y-4"
+              >
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-[#1E3A5F]">
+                    Relationship Specialist Lens
+                  </div>
+                  <h3 className="font-serif text-lg font-medium text-[#1C1917]">
+                    Analyze a Dynamic by Area
+                  </h3>
+                  <p className="text-xs text-[#57534E]">
+                    Examine both perspectives neutrally across Attachment Theory and Conflict Resolution.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-1.5">
+                  {RELATIONSHIP_AREAS.map((a) => {
+                    const active = relInsightArea === a.area;
+                    return (
+                      <button
+                        key={a.area}
+                        type="button"
+                        onClick={() => setRelInsightArea(a.area)}
+                        className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                          active
+                            ? 'bg-[#1E3A5F] text-[#FBF9F5]'
+                            : 'bg-[#F4F0E8] text-[#57534E] border border-[#1C1917]/10 hover:text-[#1C1917]'
+                        }`}
+                      >
+                        {a.area}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <textarea
+                  value={relSituation}
+                  onChange={(e) => setRelSituation(e.target.value)}
+                  rows={3}
+                  placeholder={`Describe a situation or recurring pattern in ${relInsightArea.toLowerCase()}...`}
+                  className="w-full rounded-md border border-[#1C1917]/15 bg-[#F4F0E8]/40 p-3 text-sm leading-relaxed text-[#1C1917] placeholder:text-[#78716C] focus:outline-none focus:border-[#1E3A5F]"
+                />
+
+                <button
+                  type="submit"
+                  disabled={isAnalyzingRel || relSituation.trim().length < 10}
+                  className="w-full inline-flex items-center justify-center gap-2 py-2 px-4 text-sm font-medium border border-[#1E3A5F] text-[#1E3A5F] rounded-md hover:bg-[#1E3A5F] hover:text-[#FBF9F5] disabled:opacity-45 transition-colors"
+                >
+                  {isAnalyzingRel ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Mapping Perspectives...</span>
+                    </>
+                  ) : (
+                    <span>Analyze {relInsightArea} Dynamic</span>
+                  )}
+                </button>
+              </form>
+            </div>
+
+            {/* Constellation SVG, Dynamics Ledger & Area Insights */}
+            <div className="lg:col-span-7 space-y-6">
+              <div className="border border-[#1C1917]/10 rounded-lg bg-[#FBF9F5] p-6 space-y-4">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <div className="space-y-0.5">
+                    <h2 className="font-serif text-xl font-medium text-[#1C1917]">
+                      Relational Constellation
+                    </h2>
+                    <div className="text-xs text-[#78716C]">
+                      <span>
+                        {relationshipAreaFilter === 'All'
+                          ? 'All 4 Relationship Areas'
+                          : relationshipAreaFilter}
+                      </span>
+                      <span className="mx-1.5" aria-hidden="true">·</span>
+                      <span>Proximity reflects closeness · Dashed line reflects tension</span>
+                    </div>
+                  </div>
+                  {relationshipAreaFilter !== 'All' && (
+                    <button
+                      type="button"
+                      onClick={() => setRelationshipAreaFilter('All')}
+                      className="text-xs text-[#1E3A5F] hover:underline whitespace-nowrap"
+                    >
+                      Show all areas
+                    </button>
+                  )}
+                </div>
+
+                {filteredRelationships.length === 0 ? (
+                  <p className="text-sm text-[#57534E] py-6">
+                    {relationships.length === 0
+                      ? 'Add romantic, friendship, family, or work dynamics on the left to visualize closeness, tension, and shared needs across your social system.'
+                      : `No entries mapped in ${relationshipAreaFilter} yet.`}
+                  </p>
+                ) : (
+                  <div className="w-full flex justify-center">
+                    <svg
+                      viewBox="0 0 520 300"
+                      className="w-full max-w-[520px] h-auto"
+                      role="img"
+                      aria-label="Relationship constellation map centered on Self"
+                    >
+                      <circle cx="260" cy="150" r="55" fill="none" stroke="rgba(28,25,23,0.08)" />
+                      <circle cx="260" cy="150" r="105" fill="none" stroke="rgba(28,25,23,0.08)" />
+                      <circle cx="260" cy="150" r="142" fill="none" stroke="rgba(28,25,23,0.06)" />
+
+                      {filteredRelationships.slice(0, 10).map((rel, idx, arr) => {
+                        const angle = (idx / Math.max(arr.length, 1)) * Math.PI * 2 - Math.PI / 2;
+                        const radius = 140 - (rel.closeness - 1) * 22;
+                        const x = 260 + Math.cos(angle) * radius;
+                        const y = 150 + Math.sin(angle) * radius;
+                        const highTension = rel.tension >= 4;
+
+                        return (
+                          <g key={rel.id}>
+                            <line
+                              x1="260"
+                              y1="150"
+                              x2={x}
+                              y2={y}
+                              stroke={highTension ? '#9A3412' : '#1E3A5F'}
+                              strokeOpacity={highTension ? 0.55 : 0.35}
+                              strokeWidth={highTension ? 1.5 : 1}
+                              strokeDasharray={rel.tension >= 3 ? '4 4' : undefined}
+                            />
+                            <circle
+                              cx={x}
+                              cy={y}
+                              r="18"
+                              fill="#F4F0E8"
+                              stroke={highTension ? '#9A3412' : '#1E3A5F'}
+                              strokeWidth="1.25"
+                            />
+                            <text
+                              x={x}
+                              y={y + 4}
+                              textAnchor="middle"
+                              fontSize="10"
+                              fontWeight="600"
+                              fill="#1C1917"
+                            >
+                              {rel.name.slice(0, 8)}
+                            </text>
+                          </g>
+                        );
+                      })}
+
+                      <circle cx="260" cy="150" r="22" fill="#1E3A5F" />
+                      <text
+                        x="260"
+                        y="154"
+                        textAnchor="middle"
+                        fontSize="11"
+                        fontWeight="600"
+                        fill="#FBF9F5"
+                      >
+                        Self
+                      </text>
+                    </svg>
+                  </div>
+                )}
               </div>
 
-              {relationships.length === 0 ? (
-                <p className="text-sm text-[#57534E] py-6">
-                  Add family, partner, friend, or work dynamics on the left to visualize closeness, tension, and shared needs across your social system.
-                </p>
-              ) : (
-                <div className="w-full flex justify-center">
-                  <svg
-                    viewBox="0 0 520 300"
-                    className="w-full max-w-[520px] h-auto"
-                    role="img"
-                    aria-label="Relationship constellation map centered on Self"
-                  >
-                    <circle cx="260" cy="150" r="55" fill="none" stroke="rgba(28,25,23,0.08)" />
-                    <circle cx="260" cy="150" r="105" fill="none" stroke="rgba(28,25,23,0.08)" />
-                    <circle cx="260" cy="150" r="142" fill="none" stroke="rgba(28,25,23,0.06)" />
+              {filteredRelationships.length > 0 && (
+                <div className="divide-y divide-[#1C1917]/10 border border-[#1C1917]/10 rounded-lg bg-[#FBF9F5]">
+                  {filteredRelationships.map((rel) => (
+                    <div key={rel.id} className="p-4 flex items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="text-xs text-[#78716C] font-mono tabular-nums">
+                          <span className="font-sans font-semibold text-[#1E3A5F]">{rel.area}</span>
+                          <span className="mx-1.5" aria-hidden="true">·</span>
+                          <span className="font-sans text-[#57534E]">{rel.role}</span>
+                          <span className="mx-1.5" aria-hidden="true">·</span>
+                          <span>Closeness {rel.closeness}/5</span>
+                          <span className="mx-1.5" aria-hidden="true">·</span>
+                          <span>Tension {rel.tension}/5</span>
+                        </div>
+                        <div className="text-sm font-semibold text-[#1C1917]">{rel.name}</div>
+                        {rel.dynamicNote && (
+                          <p className="text-xs text-[#57534E] leading-relaxed">{rel.dynamicNote}</p>
+                        )}
+                        {rel.sharedNeed && (
+                          <p className="text-xs text-[#292524]">Core Need / Boundary: {rel.sharedNeed}</p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteRelationshipNode(rel.id)}
+                        aria-label={`Remove ${rel.name}`}
+                        className="p-1 text-[#78716C] hover:text-[#9A3412]"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
 
-                    {relationships.slice(0, 10).map((rel, idx, arr) => {
-                      const angle = (idx / Math.max(arr.length, 1)) * Math.PI * 2 - Math.PI / 2;
-                      const radius = 140 - (rel.closeness - 1) * 22;
-                      const x = 260 + Math.cos(angle) * radius;
-                      const y = 150 + Math.sin(angle) * radius;
-                      const highTension = rel.tension >= 4;
+              {/* Saved AI Relationship Area Analyses */}
+              {relationshipInsights.length > 0 && (
+                <div className="space-y-4">
+                  <div className="flex items-baseline justify-between">
+                    <h3 className="font-serif text-lg font-medium text-[#1C1917]">
+                      Area Dynamics Insights
+                    </h3>
+                    <span className="font-mono text-xs text-[#78716C] tabular-nums">
+                      {relationshipInsights.length} saved
+                    </span>
+                  </div>
 
-                      return (
-                        <g key={rel.id}>
-                          <line
-                            x1="260"
-                            y1="150"
-                            x2={x}
-                            y2={y}
-                            stroke={highTension ? '#9A3412' : '#1E3A5F'}
-                            strokeOpacity={highTension ? 0.55 : 0.35}
-                            strokeWidth={highTension ? 1.5 : 1}
-                            strokeDasharray={rel.tension >= 3 ? '4 4' : undefined}
-                          />
-                          <circle
-                            cx={x}
-                            cy={y}
-                            r="18"
-                            fill="#F4F0E8"
-                            stroke={highTension ? '#9A3412' : '#1E3A5F'}
-                            strokeWidth="1.25"
-                          />
-                          <text
-                            x={x}
-                            y={y + 4}
-                            textAnchor="middle"
-                            fontSize="10"
-                            fontWeight="600"
-                            fill="#1C1917"
-                          >
-                            {rel.name.slice(0, 8)}
-                          </text>
-                        </g>
-                      );
-                    })}
-
-                    <circle cx="260" cy="150" r="22" fill="#1E3A5F" />
-                    <text
-                      x="260"
-                      y="154"
-                      textAnchor="middle"
-                      fontSize="11"
-                      fontWeight="600"
-                      fill="#FBF9F5"
+                  {relationshipInsights.map((ins) => (
+                    <div
+                      key={ins.id}
+                      className="border border-[#1C1917]/12 rounded-lg bg-[#FBF9F5] p-5 space-y-4"
                     >
-                      Self
-                    </text>
-                  </svg>
+                      <div className="flex items-start justify-between gap-3 border-b border-[#1C1917]/10 pb-3">
+                        <div className="space-y-1">
+                          <div className="text-xs text-[#78716C]">
+                            <span className="font-medium text-[#1E3A5F]">{ins.area}</span>
+                            <span className="mx-1.5" aria-hidden="true">·</span>
+                            <span className="font-mono tabular-nums">
+                              {new Date(ins.createdAt).toLocaleDateString()}
+                            </span>
+                          </div>
+                          <p className="text-sm font-medium text-[#1C1917] leading-relaxed">
+                            {ins.dynamicSummary}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteRelationshipInsight(ins.id)}
+                          aria-label="Delete relationship insight"
+                          className="p-1 text-[#78716C] hover:text-[#9A3412] shrink-0"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                        <div className="p-3.5 rounded-md bg-[#F4F0E8]/60 border border-[#1C1917]/10 space-y-1">
+                          <div className="font-semibold text-[#1E3A5F]">Your Perspective & Needs</div>
+                          <p className="text-[#292524] leading-relaxed">{ins.yourPerspectiveAndNeeds}</p>
+                        </div>
+                        <div className="p-3.5 rounded-md bg-[#F4F0E8]/60 border border-[#1C1917]/10 space-y-1">
+                          <div className="font-semibold text-[#57534E]">Their Likely Perspective & Needs</div>
+                          <p className="text-[#292524] leading-relaxed">{ins.otherPerspectiveAndNeeds}</p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 text-xs text-[#292524]">
+                        <div>
+                          <span className="font-semibold text-[#1C1917]">Communication Pattern: </span>
+                          <span>{ins.communicationPattern}</span>
+                        </div>
+                        <div>
+                          <span className="font-semibold text-[#1E3A5F]">Constructive Boundary / Request: </span>
+                          <span>{ins.boundaryOrRequest}</span>
+                        </div>
+                        <div className="text-[#57534E] italic pt-1">
+                          Self-Inquiry: {ins.reflectionQuestion}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
-
-            {relationships.length > 0 && (
-              <div className="divide-y divide-[#1C1917]/10 border border-[#1C1917]/10 rounded-lg bg-[#FBF9F5]">
-                {relationships.map((rel) => (
-                  <div key={rel.id} className="p-4 flex items-start justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="text-xs text-[#78716C] font-mono tabular-nums">
-                        <span className="font-sans font-semibold text-[#1E3A5F]">{rel.role}</span>
-                        <span className="mx-1.5" aria-hidden="true">·</span>
-                        <span>Closeness {rel.closeness}/5</span>
-                        <span className="mx-1.5" aria-hidden="true">·</span>
-                        <span>Tension {rel.tension}/5</span>
-                      </div>
-                      <div className="text-sm font-semibold text-[#1C1917]">{rel.name}</div>
-                      {rel.dynamicNote && (
-                        <p className="text-xs text-[#57534E] leading-relaxed">{rel.dynamicNote}</p>
-                      )}
-                      {rel.sharedNeed && (
-                        <p className="text-xs text-[#292524]">Core Need / Boundary: {rel.sharedNeed}</p>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onDeleteRelationshipNode(rel.id)}
-                      aria-label={`Remove ${rel.name}`}
-                      className="p-1 text-[#78716C] hover:text-[#9A3412]"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       )}

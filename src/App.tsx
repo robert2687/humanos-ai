@@ -5,21 +5,28 @@
 
 import { useState } from 'react';
 import { AppTab, Header } from './components/Header';
+import { TodayView } from './components/TodayView';
 import { DialogueView } from './components/DialogueView';
-import { EventLabView } from './components/EventLabView';
+import { RelationshipsView } from './components/RelationshipsView';
+import { EventLabSection, EventLabView } from './components/EventLabView';
 import { PatternAtlasView } from './components/PatternAtlasView';
 import { WorkspaceRecordsView } from './components/WorkspaceRecordsView';
 import { CrisisSupportView } from './components/CrisisSupportView';
 import { PhilosophyView } from './components/PhilosophyView';
 import { useHumanosStore } from './hooks/useHumanosStore';
+import { buildWorkspaceVectorDocuments } from './lib/vectorDocuments';
+import { buildWorkspaceTimeSeriesPoints } from './lib/timeSeriesPoints';
 import {
   CognitiveDistortionReport,
+  CommentReviewRecord,
   EventAnalysisRecord,
   GrowthJournalEntry,
 } from './types/humanos';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<AppTab>('dialogue');
+  const [activeTab, setActiveTab] = useState<AppTab>('today');
+  const [eventLabSection, setEventLabSection] =
+    useState<EventLabSection>('events');
   const [activeEventContext, setActiveEventContext] =
     useState<EventAnalysisRecord | null>(null);
 
@@ -82,6 +89,20 @@ export default function App() {
     setExplainMePortrait,
     setPersonalityProfile,
     dynamicUserModel,
+    digitalTwinSnapshot,
+    setDigitalTwinSnapshot,
+    dailyInsights,
+    addDailyInsight,
+    deleteDailyInsight,
+    conflictReports,
+    addConflictReport,
+    deleteConflictReport,
+    commentReviews,
+    addCommentReview,
+    deleteCommentReview,
+    retentionDays,
+    setRetentionDays,
+    applyRetentionSweep,
     setDynamicUserModel,
     upsertUserModelEntry,
     updateUserModelEntry,
@@ -164,6 +185,90 @@ export default function App() {
     setActiveTab('dialogue');
   };
 
+  const handleReflectTodayInDialogue = (input: {
+    todayMood: number;
+    moodLabel: string;
+    energyLevel: number;
+    stressScore: number;
+    todaysReflection: string;
+    personalInsight?: string;
+  }) => {
+    const synthRecord: EventAnalysisRecord = {
+      id: `today_${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      lens: 'behavioral-loop',
+      contextCategory: 'Personal',
+      rawEvent:
+        input.todaysReflection ||
+        `Today check-in: Mood ${input.todayMood}/5 (${input.moodLabel}), Energy ${input.energyLevel}/5, Stress ${input.stressScore}/5.`,
+      summaryTitle: `Today · Mood ${input.todayMood}/5 (${input.moodLabel})`,
+      facts: [
+        `Today Mood: ${input.todayMood}/5 (${input.moodLabel})`,
+        `Energy Level: ${input.energyLevel}/5`,
+        `Stress Score: ${input.stressScore}/5`,
+      ],
+      interpretations: input.personalInsight ? [input.personalInsight] : [],
+      emotions: [{ name: input.moodLabel, signal: 'Daily emotional pulse' }],
+      needs: [],
+      requests: [],
+      actions: [],
+      reflectiveQuestions: [],
+      crisisDetected: false,
+    };
+    startNewSession('insight', synthRecord.summaryTitle);
+    setActiveEventContext(synthRecord);
+    setActiveTab('dialogue');
+  };
+
+  const handleDiscussRelationshipInDialogue = (input: {
+    mode: 'relationship' | 'de-escalation';
+    title: string;
+    summary: string;
+    scriptOrNeed?: string;
+  }) => {
+    const synthRecord: EventAnalysisRecord = {
+      id: `rel_${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      lens: 'conflict-emotion',
+      contextCategory: input.mode === 'de-escalation' ? 'Conflict & Anger' : 'Relationship',
+      rawEvent: input.summary,
+      summaryTitle: input.title,
+      facts: [input.summary],
+      interpretations: [],
+      emotions: [],
+      needs: input.scriptOrNeed ? [input.scriptOrNeed] : [],
+      requests: input.scriptOrNeed ? [input.scriptOrNeed] : [],
+      actions: input.scriptOrNeed ? [input.scriptOrNeed] : [],
+      reflectiveQuestions: [],
+      crisisDetected: false,
+    };
+    startNewSession(input.mode, input.title);
+    setActiveEventContext(synthRecord);
+    setActiveTab('dialogue');
+  };
+
+  const handleRehearseDigitalPause = (review: CommentReviewRecord) => {
+    const synthRecord: EventAnalysisRecord = {
+      id: review.id,
+      createdAt: review.createdAt,
+      lens: 'digital-check',
+      contextCategory: 'Digital & Online',
+      rawEvent: review.draftReply,
+      summaryTitle: `${review.platform} · ${review.commentVerdict}`,
+      facts: review.contextComment ? [review.contextComment] : [review.draftReply],
+      interpretations: review.hostilitySignals,
+      emotions: [{ name: review.toneAssessment, signal: review.emotionalTrigger }],
+      needs: [],
+      requests: review.healthierRewrite ? [review.healthierRewrite] : [],
+      actions: review.healthierRewrite ? [review.healthierRewrite] : [],
+      reflectiveQuestions: [],
+      crisisDetected: review.crisisDetected,
+    };
+    startNewSession('digital-pause', synthRecord.summaryTitle);
+    setActiveEventContext(synthRecord);
+    setActiveTab('dialogue');
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-[#FBF9F5] text-[#1C1917]">
       <Header
@@ -173,6 +278,29 @@ export default function App() {
       />
 
       <main className="flex-1">
+        {activeTab === 'today' && (
+          <TodayView
+            activeUser={activeUser}
+            dailyInsights={dailyInsights}
+            wellbeingCheckIns={wellbeingCheckIns}
+            assessments={assessments}
+            relationships={relationships}
+            relationshipInsights={relationshipInsights}
+            eventAnalyses={eventAnalyses}
+            sessions={sessions}
+            hypotheses={hypotheses}
+            dynamicUserModel={dynamicUserModel}
+            retentionDays={retentionDays}
+            onAddWellbeingCheckIn={addWellbeingCheckIn}
+            onAddJournalEntry={addJournalEntry}
+            onAddDailyInsight={addDailyInsight}
+            onDeleteDailyInsight={deleteDailyInsight}
+            onReflectTodayInDialogue={handleReflectTodayInDialogue}
+            onOpenWellbeingAtlas={() => setActiveTab('pattern-atlas')}
+            onOpenCrisisSupport={() => setActiveTab('crisis')}
+          />
+        )}
+
         {activeTab === 'dialogue' && (
           <DialogueView
             sessions={sessions}
@@ -199,14 +327,51 @@ export default function App() {
           />
         )}
 
+        {activeTab === 'relationships' && (
+          <RelationshipsView
+            relationships={relationships}
+            relationshipInsights={relationshipInsights}
+            conflictReports={conflictReports}
+            eventAnalyses={eventAnalyses}
+            wellbeingCheckIns={wellbeingCheckIns}
+            assessments={assessments}
+            sessions={sessions}
+            retentionDays={retentionDays}
+            onAddRelationshipNode={addRelationshipNode}
+            onDeleteRelationshipNode={deleteRelationshipNode}
+            onAddRelationshipInsight={addRelationshipInsight}
+            onDeleteRelationshipInsight={deleteRelationshipInsight}
+            onAddConflictReport={addConflictReport}
+            onDeleteConflictReport={deleteConflictReport}
+            onDiscussInDialogue={handleDiscussRelationshipInDialogue}
+            onOpenSocialHealth={() => {
+              setEventLabSection('social-health');
+              setActiveTab('event-lab');
+            }}
+            onOpenCrisisSupport={() => setActiveTab('crisis')}
+          />
+        )}
+
         {activeTab === 'event-lab' && (
           <EventLabView
             records={eventAnalyses}
             distortionReports={distortionReports}
+            commentReviews={commentReviews}
+            relationships={relationships}
+            relationshipInsights={relationshipInsights}
+            wellbeingCheckIns={wellbeingCheckIns}
+            assessments={assessments}
+            sessions={sessions}
+            retentionDays={retentionDays}
+            defaultSection={eventLabSection}
             onSaveRecord={addEventAnalysis}
             onDeleteRecord={deleteEventAnalysis}
             onSaveDistortionReport={addDistortionReport}
             onDeleteDistortionReport={deleteDistortionReport}
+            onAddCommentReview={addCommentReview}
+            onDeleteCommentReview={deleteCommentReview}
+            onRehearseDigitalPause={handleRehearseDigitalPause}
+            onOpenConflictReports={() => setActiveTab('relationships')}
             onDiscussInDialogue={handleDiscussEventInDialogue}
             onDiscussDistortionInDialogue={handleDiscussDistortionInDialogue}
             onOpenCrisisSupport={() => setActiveTab('crisis')}
@@ -219,6 +384,7 @@ export default function App() {
             sessions={sessions}
             eventAnalyses={eventAnalyses}
             wellbeingCheckIns={wellbeingCheckIns}
+            assessments={assessments}
             timelineEvents={timelineEvents}
             journalEntries={journalEntries}
             growthPlans={growthPlans}
@@ -226,6 +392,13 @@ export default function App() {
             relationshipInsights={relationshipInsights}
             explainMePortrait={explainMePortrait}
             personalityProfile={personalityProfile}
+            timeSeriesPoints={buildWorkspaceTimeSeriesPoints({
+              wellbeingCheckIns,
+              assessments,
+            })}
+            retentionDays={retentionDays}
+            onChangeRetentionDays={setRetentionDays}
+            onApplyRetentionSweep={applyRetentionSweep}
             onAddHypothesis={addHypothesis}
             onUpdateHypothesis={updateHypothesis}
             onRemoveHypothesis={removeHypothesis}
@@ -243,6 +416,8 @@ export default function App() {
             onDeleteRelationshipInsight={deleteRelationshipInsight}
             onSetExplainMePortrait={setExplainMePortrait}
             onSetPersonalityProfile={setPersonalityProfile}
+            digitalTwinSnapshot={digitalTwinSnapshot}
+            onSetDigitalTwinSnapshot={setDigitalTwinSnapshot}
             dynamicUserModel={dynamicUserModel}
             onSetDynamicUserModel={setDynamicUserModel}
             onUpsertUserModelEntry={upsertUserModelEntry}
@@ -270,6 +445,8 @@ export default function App() {
             growthPlans={growthPlans}
             timelineEvents={timelineEvents}
             relationships={relationships}
+            relationshipInsights={relationshipInsights}
+            retentionDays={retentionDays}
             dynamicUserModel={dynamicUserModel}
             onCreateUser={createUserProfile}
             onSelectUser={selectUserProfile}
@@ -301,6 +478,20 @@ export default function App() {
 
         {activeTab === 'philosophy' && (
           <PhilosophyView
+            vectorDocuments={buildWorkspaceVectorDocuments({
+              sessions,
+              journalEntries,
+              goals,
+              assessments,
+              eventAnalyses,
+              dynamicUserModel,
+            })}
+            timeSeriesPoints={buildWorkspaceTimeSeriesPoints({
+              wellbeingCheckIns,
+              assessments,
+            })}
+            retentionDays={retentionDays}
+            onChangeRetentionDays={setRetentionDays}
             onStartDialogue={() => setActiveTab('dialogue')}
             onOpenEventLab={() => setActiveTab('event-lab')}
             onSyncWatchPulse={addWellbeingCheckIn}

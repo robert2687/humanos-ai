@@ -3,7 +3,21 @@ import { Check, Compass, Download, Loader2, Pencil, Plus, Trash2, X } from 'luci
 import { gatewayFetch } from '../lib/gatewayClient';
 import { detectClientCrisisCategories } from '../hooks/useHumanosStore';
 import { CrisisBanner } from './CrisisSupportView';
+import { TimeSeriesPanel } from './TimeSeriesPanel';
+import { WellbeingTelemetryDeck } from './WellbeingTelemetryDeck';
+import { HumanDigitalTwinPanel } from './HumanDigitalTwinPanel';
+import { PsychologicalIndicesPanel } from './PsychologicalIndicesPanel';
+import { PredictiveRiskPanel } from './PredictiveRiskPanel';
 import {
+  computePsychologicalIndices,
+  formatPsychologicalIndicesSummary,
+} from '../lib/psychologicalIndices';
+import {
+  computeRiskForecasts,
+  formatRiskForecastSummary,
+} from '../lib/riskForecasts';
+import {
+  AssessmentRecord,
   CrisisRiskCategory,
   DynamicUserModel,
   DynamicUserModelEntry,
@@ -12,7 +26,9 @@ import {
   GrowthArea,
   GrowthAreaPlan,
   GrowthJournalEntry,
+  HumanDigitalTwinSnapshot,
   HypothesisStatus,
+  LifeHistoryDomain,
   LifeTimelineEvent,
   PatternDimension,
   PatternHypothesis,
@@ -21,6 +37,7 @@ import {
   RelationshipArea,
   RelationshipAreaInsight,
   RelationshipNode,
+  TimeSeriesMetricPoint,
   UserModelConfidence,
   UserModelDomain,
   WellbeingCheckIn,
@@ -31,6 +48,7 @@ interface PatternAtlasViewProps {
   sessions: ReflectionSession[];
   eventAnalyses: EventAnalysisRecord[];
   wellbeingCheckIns: WellbeingCheckIn[];
+  assessments: AssessmentRecord[];
   timelineEvents: LifeTimelineEvent[];
   journalEntries: GrowthJournalEntry[];
   growthPlans: GrowthAreaPlan[];
@@ -38,6 +56,10 @@ interface PatternAtlasViewProps {
   relationshipInsights: RelationshipAreaInsight[];
   explainMePortrait: ExplainMePortrait | null;
   personalityProfile: PersonalityAnalystProfile | null;
+  timeSeriesPoints: TimeSeriesMetricPoint[];
+  retentionDays: number;
+  onChangeRetentionDays: (days: number) => void;
+  onApplyRetentionSweep: (days?: number) => { removedCheckIns: number };
   onAddHypothesis: (input: {
     dimension: PatternDimension;
     statement: string;
@@ -68,6 +90,8 @@ interface PatternAtlasViewProps {
   onDeleteRelationshipInsight: (id: string) => void;
   onSetExplainMePortrait: (portrait: ExplainMePortrait | null) => void;
   onSetPersonalityProfile: (profile: PersonalityAnalystProfile | null) => void;
+  digitalTwinSnapshot: HumanDigitalTwinSnapshot | null;
+  onSetDigitalTwinSnapshot: (snapshot: HumanDigitalTwinSnapshot | null) => void;
   dynamicUserModel: DynamicUserModel;
   onSetDynamicUserModel: (model: {
     summaryNote: string;
@@ -92,10 +116,19 @@ interface PatternAtlasViewProps {
 
 const DIMENSIONS: PatternDimension[] = [
   'Values',
-  'Strengths',
   'Triggers',
+  'Strengths',
+  'Recurring Concerns',
   'Challenges',
   'Relational & Communication',
+];
+
+const LIFE_HISTORY_DOMAINS: LifeHistoryDomain[] = [
+  'Career Changes',
+  'Losses',
+  'Relationships',
+  'Achievements',
+  'Traumatic Events',
 ];
 
 const STATUS_LABELS: Record<HypothesisStatus, string> = {
@@ -106,7 +139,7 @@ const STATUS_LABELS: Record<HypothesisStatus, string> = {
 };
 
 const WELLBEING_FIELDS: {
-  key: keyof Omit<WellbeingCheckIn, 'id' | 'createdAt' | 'note'>;
+  key: keyof Omit<WellbeingCheckIn, 'id' | 'createdAt' | 'note' | 'sleepHours'>;
   label: string;
   lowLabel: string;
   highLabel: string;
@@ -119,6 +152,7 @@ const WELLBEING_FIELDS: {
   { key: 'motivation', label: 'Motivation', lowLabel: 'Depleted', highLabel: 'Engaged' },
   { key: 'energy', label: 'Energy', lowLabel: 'Exhausted', highLabel: 'Restored' },
   { key: 'lifeSatisfaction', label: 'Life Satisfaction', lowLabel: 'Discontent', highLabel: 'Aligned' },
+  { key: 'sleepQuality', label: 'Sleep Quality', lowLabel: 'Restless', highLabel: 'Restorative' },
 ];
 
 const TIMELINE_CHAPTERS: LifeTimelineEvent['chapter'][] = [
@@ -269,6 +303,7 @@ export function PatternAtlasView({
   sessions,
   eventAnalyses,
   wellbeingCheckIns,
+  assessments,
   timelineEvents,
   journalEntries,
   growthPlans,
@@ -276,6 +311,10 @@ export function PatternAtlasView({
   relationshipInsights,
   explainMePortrait,
   personalityProfile,
+  timeSeriesPoints,
+  retentionDays,
+  onChangeRetentionDays,
+  onApplyRetentionSweep,
   onAddHypothesis,
   onUpdateHypothesis,
   onRemoveHypothesis,
@@ -293,6 +332,8 @@ export function PatternAtlasView({
   onDeleteRelationshipInsight,
   onSetExplainMePortrait,
   onSetPersonalityProfile,
+  digitalTwinSnapshot,
+  onSetDigitalTwinSnapshot,
   dynamicUserModel,
   onSetDynamicUserModel,
   onUpsertUserModelEntry,
@@ -309,6 +350,7 @@ export function PatternAtlasView({
   const [isExplaining, setIsExplaining] = useState(false);
   const [isProfiling, setIsProfiling] = useState(false);
   const [isBuildingUserModel, setIsBuildingUserModel] = useState(false);
+  const [isAggregatingTwin, setIsAggregatingTwin] = useState(false);
   const [showAnalystJson, setShowAnalystJson] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -337,19 +379,24 @@ export function PatternAtlasView({
     motivation: 3,
     energy: 3,
     lifeSatisfaction: 3,
+    sleepHours: 7,
+    sleepQuality: 3,
     note: '',
   });
 
-  // Timeline Form
+  // Timeline Form & Domain Filter (Layer 3)
+  const [tlDomainFilter, setTlDomainFilter] = useState<'All' | LifeHistoryDomain>('All');
   const [tlForm, setTlForm] = useState<{
     timeframe: string;
     title: string;
+    domain: LifeHistoryDomain;
     chapter: LifeTimelineEvent['chapter'];
     emotionalImpact: string;
     patternOrLesson: string;
   }>({
     timeframe: '',
     title: '',
+    domain: 'Career Changes',
     chapter: 'Turning Point',
     emotionalImpact: '',
     patternOrLesson: '',
@@ -405,6 +452,43 @@ export function PatternAtlasView({
     return h.dimension === dimensionFilter;
   });
 
+  // 8 Quantitative Psychological & Wellbeing Indices (Mood, Anxiety, Burnout, Resilience, Social Connection, Self-Esteem, Life Satisfaction, Emotional Stability)
+  const indexSuite = useMemo(
+    () =>
+      computePsychologicalIndices({
+        wellbeingCheckIns,
+        assessments,
+        relationships,
+        retentionDays,
+      }),
+    [wellbeingCheckIns, assessments, relationships, retentionDays]
+  );
+
+  // 6 Predictive / Early-Warning Risk Models (Burnout, Relationship, Stress Escalation, Isolation, Conflict Probability, Emotional Decline)
+  const riskSuite = useMemo(
+    () =>
+      computeRiskForecasts({
+        wellbeingCheckIns,
+        assessments,
+        relationships,
+        relationshipInsights,
+        eventAnalyses,
+        sessions,
+        indexSuite,
+        retentionDays,
+      }),
+    [
+      wellbeingCheckIns,
+      assessments,
+      relationships,
+      relationshipInsights,
+      eventAnalyses,
+      sessions,
+      indexSuite,
+      retentionDays,
+    ]
+  );
+
   // Observable non-diagnostic wellbeing indicators computed strictly from logged check-ins
   const wellbeingSignals = useMemo(() => {
     if (wellbeingCheckIns.length === 0) return null;
@@ -454,8 +538,11 @@ export function PatternAtlasView({
       .join('\n');
 
     const timelineSummary = timelineEvents
-      .slice(0, 10)
-      .map((t) => `[Timeline ${t.timeframe} | ${t.chapter}]: ${t.title} — ${t.patternOrLesson}`)
+      .slice(0, 14)
+      .map(
+        (t) =>
+          `[Layer 3 · ${t.domain || 'Life Event'} | ${t.timeframe} | ${t.chapter}]: ${t.title}${t.emotionalImpact ? ` (Impact: ${t.emotionalImpact})` : ''} — ${t.patternOrLesson}`
+      )
       .join('\n');
 
     const journalSummary = journalEntries
@@ -475,14 +562,19 @@ export function PatternAtlasView({
       .slice(0, 8)
       .map(
         (w) =>
-          `[Wellbeing ${new Date(w.createdAt).toLocaleDateString()}]: Mood ${w.mood}/5, Stress ${w.stress}/5, Anxiety ${w.anxiety}/5, Connection ${w.socialConnection}/5, Self-Esteem ${w.selfEsteem}/5, Motivation ${w.motivation}/5, Energy ${w.energy}/5, Satisfaction ${w.lifeSatisfaction}/5${w.note ? ` — ${w.note}` : ''}`
+          `[Wellbeing ${new Date(w.createdAt).toLocaleDateString()}]: Mood ${w.mood}/5, Stress ${w.stress}/5, Anxiety ${w.anxiety}/5, Connection ${w.socialConnection}/5, Self-Esteem ${w.selfEsteem}/5, Motivation ${w.motivation}/5, Energy ${w.energy}/5, Sleep ${(w.sleepHours ?? 7).toFixed(1)}h (Quality ${w.sleepQuality ?? 3}/5), Satisfaction ${w.lifeSatisfaction}/5${w.note ? ` — ${w.note}` : ''}`
       )
       .join('\n');
+
+    const indicesSummary = formatPsychologicalIndicesSummary(indexSuite);
+    const riskSummary = formatRiskForecastSummary(riskSuite);
 
     return {
       sessionSummaries,
       eventSummaries,
       wellbeingSummary,
+      indicesSummary,
+      riskSummary,
       fullBundle: [
         sessionSummaries,
         eventSummaries,
@@ -490,6 +582,8 @@ export function PatternAtlasView({
         journalSummary,
         relSummary,
         wellbeingSummary,
+        indicesSummary,
+        riskSummary,
       ]
         .filter(Boolean)
         .join('\n\n'),
@@ -661,6 +755,90 @@ export function PatternAtlasView({
     }
   };
 
+  const handleAggregateDigitalTwin = async () => {
+    setIsAggregatingTwin(true);
+    setActionError(null);
+
+    try {
+      const {
+        sessionSummaries,
+        eventSummaries,
+        wellbeingSummary,
+        indicesSummary,
+        riskSummary,
+        fullBundle,
+      } = buildFullContextBundle();
+
+      const layer1Summary = [
+        `Sessions: ${sessions.length}, Event Analyses: ${eventAnalyses.length}, Wellbeing Check-Ins: ${wellbeingCheckIns.length}, Time-Series Window: ${retentionDays}d`,
+        indicesSummary,
+        riskSummary,
+        wellbeingSummary,
+        sessionSummaries,
+        eventSummaries,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+
+      const activeHyps = hypotheses.filter((h) => h.status !== 'dismissed');
+      const layer2HypothesesText = activeHyps
+        .map((h) => `[Layer 2 · ${h.dimension} | ${h.status}]: ${h.statement}`)
+        .join('\n');
+      const userModelText = dynamicUserModel.entries
+        .map((e) => `[User Model · ${e.domain} | ${e.confidence}]: ${e.observation}`)
+        .join('\n');
+      const layer2Summary = [layer2HypothesesText, userModelText].filter(Boolean).join('\n\n');
+
+      const layer3Summary = timelineEvents
+        .map(
+          (t) =>
+            `[Layer 3 · ${t.domain || 'Career Changes'} | ${t.timeframe} | ${t.chapter}]: ${t.title}${t.emotionalImpact ? ` | Impact: ${t.emotionalImpact}` : ''}${t.patternOrLesson ? ` | Pattern: ${t.patternOrLesson}` : ''}`
+        )
+        .join('\n');
+
+      const layer3Counts: Record<LifeHistoryDomain, number> = {
+        'Career Changes': timelineEvents.filter((t) => (t.domain || 'Career Changes') === 'Career Changes').length,
+        Losses: timelineEvents.filter((t) => t.domain === 'Losses').length,
+        Relationships: timelineEvents.filter((t) => t.domain === 'Relationships').length,
+        Achievements: timelineEvents.filter((t) => t.domain === 'Achievements').length,
+        'Traumatic Events': timelineEvents.filter((t) => t.domain === 'Traumatic Events').length,
+      };
+
+      const combinedCheck = [layer1Summary, layer2Summary, layer3Summary, fullBundle]
+        .filter(Boolean)
+        .join('\n');
+      if (combinedCheck.trim().length < 20) {
+        throw new Error(
+          'Add reflections, Layer 2 patterns, or Layer 3 life-history milestones before aggregating your Layer 4 Human Digital Twin.'
+        );
+      }
+
+      const response = await gatewayFetch('/api/agents/digital-twin', {
+        method: 'POST',
+        body: JSON.stringify({
+          layer1Summary,
+          layer2Summary,
+          layer3Summary,
+          layer3Counts,
+          contextBundle: fullBundle,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Could not aggregate Layer 4 Human Digital Twin.');
+      }
+
+      onSetDigitalTwinSnapshot(data as HumanDigitalTwinSnapshot);
+      setAtlasSection('model');
+    } catch (err: unknown) {
+      setActionError(
+        err instanceof Error ? err.message : 'Layer 4 Human Digital Twin aggregation failed.'
+      );
+    } finally {
+      setIsAggregatingTwin(false);
+    }
+  };
+
   const handleSaveManualUserModelEntry = (e: React.FormEvent) => {
     e.preventDefault();
     if (!umObservation.trim()) return;
@@ -703,17 +881,19 @@ export function PatternAtlasView({
     onAddTimelineEvent({
       timeframe: tlForm.timeframe.trim() || 'Recent',
       title: tlForm.title.trim(),
+      domain: tlForm.domain,
       chapter: tlForm.chapter,
       emotionalImpact: tlForm.emotionalImpact.trim(),
       patternOrLesson: tlForm.patternOrLesson.trim(),
     });
-    setTlForm({
+    setTlForm((prev) => ({
       timeframe: '',
       title: '',
+      domain: prev.domain,
       chapter: 'Turning Point',
       emotionalImpact: '',
       patternOrLesson: '',
-    });
+    }));
   };
 
   const handleSaveJournal = (e: React.FormEvent) => {
@@ -866,6 +1046,28 @@ export function PatternAtlasView({
     const payload = {
       exportedAt: new Date().toISOString(),
       note: 'HUMANOS AI Human Digital Twin Export — non-diagnostic personal self-reflection archive.',
+      psychologicalIndices: indexSuite.indices.map(({ key, label, polarity, score, scale5, status, hasData }) => ({
+        key,
+        label,
+        polarity,
+        score,
+        scale5,
+        status,
+        hasData,
+      })),
+      predictiveRiskSignals: riskSuite.signals.map(
+        ({ key, label, probability, tier, trend, drivers, preventiveStep, hasData }) => ({
+          key,
+          label,
+          probability,
+          tier,
+          trend,
+          drivers,
+          preventiveStep,
+          hasData,
+        })
+      ),
+      digitalTwinSnapshot,
       dynamicUserModel,
       explainMePortrait,
       hypotheses: hypotheses.filter((h) => h.status !== 'dismissed'),
@@ -907,9 +1109,25 @@ export function PatternAtlasView({
           <div className="flex flex-wrap items-center gap-3 pt-2">
             <button
               type="button"
+              onClick={handleAggregateDigitalTwin}
+              disabled={isAggregatingTwin}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#1E3A5F] text-[#FBF9F5] rounded-md hover:bg-[#162C49] disabled:opacity-50 transition-colors whitespace-nowrap"
+            >
+              {isAggregatingTwin ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Aggregating Twin...</span>
+                </>
+              ) : (
+                <span>Aggregate Digital Twin</span>
+              )}
+            </button>
+
+            <button
+              type="button"
               onClick={handleSynthesize}
               disabled={isSynthesizing}
-              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#1E3A5F] text-[#FBF9F5] rounded-md hover:bg-[#162C49] disabled:opacity-50 transition-colors whitespace-nowrap"
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-[#1E3A5F]/35 text-[#1E3A5F] rounded-md hover:bg-[#1E3A5F] hover:text-[#FBF9F5] disabled:opacity-50 transition-colors whitespace-nowrap"
             >
               {isSynthesizing ? (
                 <>
@@ -1082,6 +1300,33 @@ export function PatternAtlasView({
       {/* SECTION 1: PERSONALITY DNA & EXPLAIN ME MODE */}
       {atlasSection === 'model' && (
         <div className="space-y-8">
+          <HumanDigitalTwinPanel
+            sessionsCount={sessions.length}
+            eventAnalysesCount={eventAnalyses.length}
+            wellbeingCount={wellbeingCheckIns.length}
+            retentionDays={retentionDays}
+            equilibriumScore={indexSuite.overallEquilibrium}
+            hasIndicesData={indexSuite.indices.some((i) => i.hasData)}
+            aggregateRiskPct={riskSuite.aggregateRisk}
+            elevatedRiskCount={riskSuite.elevatedCount}
+            onOpenWellbeing={() => setAtlasSection('wellbeing')}
+            hypotheses={hypotheses}
+            timelineEvents={timelineEvents}
+            dynamicUserModel={dynamicUserModel}
+            digitalTwinSnapshot={digitalTwinSnapshot}
+            isAggregating={isAggregatingTwin}
+            onAggregateTwin={handleAggregateDigitalTwin}
+            onSelectLayer2Dimension={(dim) => setDimensionFilter(dim)}
+            onOpenLayer3Timeline={(domain) => {
+              setTlDomainFilter(domain || 'All');
+              if (domain) {
+                setTlForm((p) => ({ ...p, domain }));
+              }
+              setAtlasSection('timeline');
+            }}
+            onOpenCrisisSupport={onOpenCrisisSupport}
+          />
+
           {/* Structured Personality Analyst Output */}
           {personalityProfile && (
             <section className="border border-[#1C1917]/12 rounded-lg bg-[#FBF9F5] p-6 sm:p-8 space-y-6">
@@ -1705,51 +1950,22 @@ export function PatternAtlasView({
       {/* SECTION 2: WELLBEING & RISK SIGNALS */}
       {atlasSection === 'wellbeing' && (
         <div className="space-y-8">
-          {/* Derived Observable Signals Strip */}
-          <div className="border border-[#1C1917]/10 rounded-lg bg-[#F4F0E8]/45 p-5 sm:p-6 space-y-4">
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h2 className="font-serif text-xl font-medium text-[#1C1917]">
-                Observable Wellbeing & Risk Indicators
-              </h2>
-              <span className="text-xs text-[#78716C]">
-                Computed strictly from your check-ins · Non-diagnostic
-              </span>
-            </div>
+          {/* Five-Pillar Wellbeing Telemetry Deck */}
+          <WellbeingTelemetryDeck
+            wellbeingCheckIns={wellbeingCheckIns}
+            retentionDays={retentionDays}
+            onChangeRetentionDays={onChangeRetentionDays}
+            onApplyRetentionSweep={onApplyRetentionSweep}
+          />
 
-            {!wellbeingSignals ? (
-              <p className="text-sm text-[#57534E]">
-                Log your first check-in below to monitor Burnout Load, Low-Mood Strain, Anxiety Pattern, Self-Esteem Stability, and Resilience indicators.
-              </p>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-                {(
-                  [
-                    ['Burnout Load', wellbeingSignals.burnoutLoad, 'Stress + low energy/motivation'],
-                    ['Low-Mood Strain', wellbeingSignals.lowMoodStrain, 'Mood & life satisfaction'],
-                    ['Anxiety Pattern', wellbeingSignals.anxietyPattern, 'Recent anxiety load'],
-                    ['Self-Esteem', wellbeingSignals.selfEsteem, 'Self-worth stability'],
-                    ['Resilience Baseline', wellbeingSignals.resilience, 'Recovery & connection'],
-                  ] as [string, { value: string; status: string }, string][]
-                ).map(([label, metric, sub]) => (
-                  <div
-                    key={label}
-                    className="p-4 rounded-md bg-[#FBF9F5] border border-[#1C1917]/10 space-y-1"
-                  >
-                    <div className="text-xs font-medium text-[#57534E]">{label}</div>
-                    <div className="flex items-baseline gap-2">
-                      <span className="font-mono text-xl font-medium text-[#1C1917] tabular-nums">
-                        {metric.value}
-                      </span>
-                      <span className="text-xs font-medium text-[#1E3A5F]">
-                        / 5 · {metric.status}
-                      </span>
-                    </div>
-                    <div className="text-[11px] text-[#78716C]">{sub}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          {/* 8 Quantitative Psychological & Wellbeing Indices */}
+          <PsychologicalIndicesPanel suite={indexSuite} />
+
+          {/* 6 Predictive / Early-Warning Risk Models */}
+          <PredictiveRiskPanel
+            suite={riskSuite}
+            onOpenCrisisSupport={onOpenCrisisSupport}
+          />
 
           {(() => {
             const noteCategories = Array.from(
@@ -1790,7 +2006,7 @@ export function PatternAtlasView({
 
               <div className="space-y-4">
                 {WELLBEING_FIELDS.map((field) => {
-                  const value = wbForm[field.key];
+                  const value = wbForm[field.key] ?? 3;
                   return (
                     <div key={field.key} className="space-y-1">
                       <div className="flex items-center justify-between text-xs">
@@ -1819,6 +2035,35 @@ export function PatternAtlasView({
                     </div>
                   );
                 })}
+
+                <div className="space-y-1 border-t border-[#1C1917]/10 pt-3">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium text-[#1C1917]">Sleep Duration</span>
+                    <span className="font-mono text-[#1E3A5F] tabular-nums">
+                      {wbForm.sleepHours.toFixed(1)} hrs
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={14}
+                    step={0.5}
+                    value={wbForm.sleepHours}
+                    onChange={(e) =>
+                      setWbForm((prev) => ({
+                        ...prev,
+                        sleepHours: Number(e.target.value),
+                      }))
+                    }
+                    aria-label="Sleep Duration"
+                    className="w-full accent-[#1E3A5F] cursor-pointer"
+                  />
+                  <div className="flex justify-between text-[11px] text-[#78716C]">
+                    <span>0h</span>
+                    <span>7–9h target</span>
+                    <span>14h</span>
+                  </div>
+                </div>
               </div>
 
               <div>
@@ -1869,6 +2114,7 @@ export function PatternAtlasView({
                         <th className="py-2.5 px-2 font-medium text-right">Estm</th>
                         <th className="py-2.5 px-2 font-medium text-right">Motiv</th>
                         <th className="py-2.5 px-2 font-medium text-right">Enrg</th>
+                        <th className="py-2.5 px-2 font-medium text-right">Sleep</th>
                         <th className="py-2.5 px-2 font-medium text-right">Satis</th>
                         <th className="py-2.5 px-2 font-medium" aria-label="Actions" />
                       </tr>
@@ -1893,6 +2139,9 @@ export function PatternAtlasView({
                           <td className="py-3 px-2 text-right font-mono tabular-nums">{entry.selfEsteem}</td>
                           <td className="py-3 px-2 text-right font-mono tabular-nums">{entry.motivation}</td>
                           <td className="py-3 px-2 text-right font-mono tabular-nums">{entry.energy}</td>
+                          <td className="py-3 px-2 text-right font-mono tabular-nums whitespace-nowrap">
+                            {(entry.sleepHours ?? 7).toFixed(1)}h · {entry.sleepQuality ?? 3}
+                          </td>
                           <td className="py-3 px-2 text-right font-mono tabular-nums">{entry.lifeSatisfaction}</td>
                           <td className="py-3 px-2 text-right">
                             <button
@@ -1912,22 +2161,52 @@ export function PatternAtlasView({
               )}
             </div>
           </div>
+
+          <TimeSeriesPanel
+            points={timeSeriesPoints}
+            retentionDays={retentionDays}
+            onChangeRetentionDays={onChangeRetentionDays}
+          />
         </div>
       )}
 
       {/* SECTION 3: LIFE TIMELINE & GROWTH JOURNAL */}
       {atlasSection === 'timeline' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          {/* Life Timeline */}
+          {/* Life Timeline (Layer 3 · Formative Life History) */}
           <section className="lg:col-span-6 space-y-5">
             <div>
+              <div className="text-xs font-medium text-[#1E3A5F]">
+                Layer 3 · Formative Life History
+              </div>
               <h2 className="font-serif text-2xl font-medium text-[#1C1917]">
                 Life Timeline
               </h2>
               <p className="text-xs text-[#57534E] mt-1">
-                Map formative events, turning points, and the enduring lessons or protective habits they shaped.
+                Map Career Changes, Losses, Relationships, Achievements, and Traumatic Events—holding difficult history gently without self-blame.
               </p>
             </div>
+
+            {(() => {
+              const timelineSafetyCategories = Array.from(
+                new Set<CrisisRiskCategory>([
+                  ...detectClientCrisisCategories(
+                    `${tlForm.title} ${tlForm.emotionalImpact} ${tlForm.patternOrLesson}`
+                  ),
+                  ...timelineEvents.flatMap((ev) =>
+                    detectClientCrisisCategories(
+                      `${ev.title} ${ev.emotionalImpact} ${ev.patternOrLesson}`
+                    )
+                  ),
+                ])
+              );
+              return timelineSafetyCategories.length > 0 ? (
+                <CrisisBanner
+                  detectedCategories={timelineSafetyCategories}
+                  onOpenResources={onOpenCrisisSupport}
+                />
+              ) : null;
+            })()}
 
             <form
               onSubmit={handleSaveTimeline}
@@ -1942,6 +2221,23 @@ export function PatternAtlasView({
                   className="px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
                 />
                 <select
+                  value={tlForm.domain}
+                  onChange={(e) =>
+                    setTlForm((p) => ({
+                      ...p,
+                      domain: e.target.value as LifeHistoryDomain,
+                    }))
+                  }
+                  aria-label="Life history domain"
+                  className="px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
+                >
+                  {LIFE_HISTORY_DOMAINS.map((dom) => (
+                    <option key={dom} value={dom}>
+                      {dom}
+                    </option>
+                  ))}
+                </select>
+                <select
                   value={tlForm.chapter}
                   onChange={(e) =>
                     setTlForm((p) => ({
@@ -1949,7 +2245,8 @@ export function PatternAtlasView({
                       chapter: e.target.value as LifeTimelineEvent['chapter'],
                     }))
                   }
-                  className="sm:col-span-2 px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
+                  aria-label="Life chapter"
+                  className="px-3 py-2 text-sm rounded-md border border-[#1C1917]/15 bg-[#FBF9F5] focus:outline-none focus:border-[#1E3A5F]"
                 >
                   {TIMELINE_CHAPTERS.map((ch) => (
                     <option key={ch} value={ch}>
@@ -1990,42 +2287,91 @@ export function PatternAtlasView({
               </div>
             </form>
 
-            {timelineEvents.length === 0 ? (
-              <div className="border border-[#1C1917]/10 rounded-lg p-6 text-sm text-[#78716C] bg-[#F4F0E8]/35">
-                No life milestones recorded yet.
-              </div>
-            ) : (
-              <div className="divide-y divide-[#1C1917]/10 border border-[#1C1917]/10 rounded-lg bg-[#FBF9F5]">
-                {timelineEvents.map((ev) => (
-                  <div key={ev.id} className="p-4 flex items-start justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="text-xs text-[#78716C]">
-                        <span className="font-mono font-medium text-[#1E3A5F] tabular-nums">
-                          {ev.timeframe}
-                        </span>
-                        <span className="mx-1.5" aria-hidden="true">·</span>
-                        <span>{ev.chapter}</span>
-                      </div>
-                      <div className="text-sm font-semibold text-[#1C1917]">{ev.title}</div>
-                      {ev.emotionalImpact && (
-                        <p className="text-xs text-[#57534E]">Impact: {ev.emotionalImpact}</p>
-                      )}
-                      {ev.patternOrLesson && (
-                        <p className="text-xs text-[#292524]">Pattern / Lesson: {ev.patternOrLesson}</p>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onDeleteTimelineEvent(ev.id)}
-                      aria-label={`Delete ${ev.title}`}
-                      className="p-1 text-[#78716C] hover:text-[#9A3412]"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+            {/* Layer 3 Domain Filter */}
+            <div className="flex flex-wrap items-center gap-1.5 p-1 bg-[#F4F0E8] border border-[#1C1917]/10 rounded-lg">
+              <button
+                type="button"
+                onClick={() => setTlDomainFilter('All')}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                  tlDomainFilter === 'All'
+                    ? 'bg-[#FBF9F5] text-[#1C1917] shadow-xs border border-[#1C1917]/10'
+                    : 'text-[#57534E] hover:text-[#1C1917]'
+                }`}
+              >
+                All ({timelineEvents.length})
+              </button>
+              {LIFE_HISTORY_DOMAINS.map((dom) => {
+                const count = timelineEvents.filter(
+                  (ev) => (ev.domain || 'Career Changes') === dom
+                ).length;
+                const active = tlDomainFilter === dom;
+                return (
+                  <button
+                    key={dom}
+                    type="button"
+                    onClick={() => setTlDomainFilter(dom)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap tabular-nums ${
+                      active
+                        ? 'bg-[#FBF9F5] text-[#1C1917] shadow-xs border border-[#1C1917]/10'
+                        : 'text-[#57534E] hover:text-[#1C1917]'
+                    }`}
+                  >
+                    {dom} ({count})
+                  </button>
+                );
+              })}
+            </div>
+
+            {(() => {
+              const filteredTimeline = timelineEvents.filter(
+                (ev) => tlDomainFilter === 'All' || (ev.domain || 'Career Changes') === tlDomainFilter
+              );
+              if (filteredTimeline.length === 0) {
+                return (
+                  <div className="border border-[#1C1917]/10 rounded-lg p-6 text-sm text-[#78716C] bg-[#F4F0E8]/35">
+                    {timelineEvents.length === 0
+                      ? 'No life milestones recorded yet.'
+                      : `No ${tlDomainFilter.toLowerCase()} milestones recorded yet.`}
                   </div>
-                ))}
-              </div>
-            )}
+                );
+              }
+              return (
+                <div className="divide-y divide-[#1C1917]/10 border border-[#1C1917]/10 rounded-lg bg-[#FBF9F5]">
+                  {filteredTimeline.map((ev) => (
+                    <div key={ev.id} className="p-4 flex items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="text-xs text-[#78716C]">
+                          <span className="font-mono font-medium text-[#1E3A5F] tabular-nums">
+                            {ev.timeframe}
+                          </span>
+                          <span className="mx-1.5" aria-hidden="true">·</span>
+                          <span className="font-medium text-[#1C1917]">
+                            {ev.domain || 'Career Changes'}
+                          </span>
+                          <span className="mx-1.5" aria-hidden="true">·</span>
+                          <span>{ev.chapter}</span>
+                        </div>
+                        <div className="text-sm font-semibold text-[#1C1917]">{ev.title}</div>
+                        {ev.emotionalImpact && (
+                          <p className="text-xs text-[#57534E]">Impact: {ev.emotionalImpact}</p>
+                        )}
+                        {ev.patternOrLesson && (
+                          <p className="text-xs text-[#292524]">Pattern / Lesson: {ev.patternOrLesson}</p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteTimelineEvent(ev.id)}
+                        aria-label={`Delete ${ev.title}`}
+                        className="p-1 text-[#78716C] hover:text-[#9A3412]"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
           </section>
 
           {/* Growth Journal & Personal Growth Areas */}

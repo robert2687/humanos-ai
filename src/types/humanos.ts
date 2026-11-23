@@ -8,8 +8,9 @@ export type ReflectionMode =
 
 export type PatternDimension =
   | 'Values'
-  | 'Strengths'
   | 'Triggers'
+  | 'Strengths'
+  | 'Recurring Concerns'
   | 'Challenges'
   | 'Relational & Communication';
 
@@ -214,14 +215,24 @@ export interface WellbeingCheckIn {
   motivation: number;
   energy: number;
   lifeSatisfaction: number;
+  sleepHours?: number;
+  sleepQuality?: number;
   note: string;
 }
+
+export type LifeHistoryDomain =
+  | 'Career Changes'
+  | 'Losses'
+  | 'Relationships'
+  | 'Achievements'
+  | 'Traumatic Events';
 
 export interface LifeTimelineEvent {
   id: string;
   timeframe: string;
   title: string;
   chapter: 'Childhood & Foundations' | 'Education & Early Career' | 'Relationships' | 'Turning Point' | 'Present Chapter';
+  domain?: LifeHistoryDomain;
   emotionalImpact: string;
   patternOrLesson: string;
   createdAt: string;
@@ -337,6 +348,29 @@ export interface DynamicUserModel {
   entries: DynamicUserModelEntry[];
 }
 
+export interface HumanDigitalTwinSnapshot {
+  generatedAt: string;
+  aggregatedSummary: string;
+  identityThesis: string;
+  decisionCompass: string;
+  protectiveLoops: string[];
+  resilienceLevers: string[];
+  layer1Signals: string[];
+  layer2Patterns: {
+    values: string[];
+    triggers: string[];
+    strengths: string[];
+    recurringConcerns: string[];
+  };
+  layer3Narrative: {
+    domain: LifeHistoryDomain;
+    count: number;
+    synthesis: string;
+  }[];
+  suggestedNextInquiry: string;
+  crisisDetected: boolean;
+}
+
 export interface UserProfile {
   id: string;
   displayName: string;
@@ -411,4 +445,257 @@ export interface HumanosReport {
   recommendedNextSteps: string[];
   ethicalNote: string;
 }
+
+export type VectorProviderId = 'azure-ai-search' | 'weaviate' | 'qdrant' | 'pinecone';
+
+export type VectorRecordCategory =
+  | 'Session'
+  | 'Journal'
+  | 'Goal'
+  | 'Assessment'
+  | 'Event Analysis'
+  | 'Dynamic User Model';
+
+export interface VectorRecordDocument {
+  id: string;
+  title: string;
+  category: VectorRecordCategory;
+  content: string;
+  updatedAt: string;
+}
+
+export interface VectorProviderStatus {
+  id: VectorProviderId;
+  name: string;
+  subtitle: string;
+  queryMode: string;
+  capabilities: string[];
+  indexOrCollection: string;
+  cloudConfigured: boolean;
+  executionMode: 'external-cloud-cluster' | 'local-gemini-vector-runtime';
+  indexedCount: number;
+}
+
+export interface VectorSearchHit {
+  id: string;
+  title: string;
+  category: VectorRecordCategory;
+  content: string;
+  score: number;
+  vectorScore: number;
+  lexicalScore: number;
+  updatedAt: string;
+}
+
+export interface VectorSearchResponse {
+  provider: VectorProviderId;
+  providerName: string;
+  executionMode: 'external-cloud-cluster' | 'local-gemini-vector-runtime';
+  embeddingModel: string;
+  query: string;
+  latencyMs: number;
+  totalIndexed: number;
+  hits: VectorSearchHit[];
+}
+
+export type TimeSeriesProviderId = 'timescaledb' | 'influxdb';
+
+export type TimeSeriesBucketWindow = '1h' | '1d' | '7d';
+
+export type TimeSeriesSource = 'wellbeing-checkin' | 'smart-watch' | 'assessment';
+
+export interface TimeSeriesMetricPoint {
+  id: string;
+  timestamp: string;
+  source: TimeSeriesSource;
+  measurement: string;
+  mood: number;
+  stress: number;
+  anxiety: number;
+  energy: number;
+  resilience: number;
+  burnoutLoad: number;
+  sleepHours?: number;
+  sleepQuality?: number;
+  assessmentScore?: number;
+}
+
+export interface TimeSeriesProviderStatus {
+  id: TimeSeriesProviderId;
+  name: string;
+  subtitle: string;
+  queryLanguage: string;
+  capabilities: string[];
+  targetContainer: string;
+  cloudConfigured: boolean;
+  executionMode: 'external-cloud-cluster' | 'local-timeseries-runtime';
+  pointCount: number;
+  retentionDays: number;
+  retentionPolicyPreview: string;
+  oldestPointAt?: string | null;
+}
+
+export interface TimeSeriesBucketSummary {
+  bucketStart: string;
+  bucketLabel: string;
+  sampleCount: number;
+  avgMood: number;
+  avgStress: number;
+  avgAnxiety: number;
+  avgEnergy: number;
+  avgResilience: number;
+  avgBurnoutLoad: number;
+  avgSleepHours: number;
+  avgSleepQuality: number;
+  avgWellbeingIndex: number;
+  peakStress: number;
+}
+
+export interface TimeSeriesQueryResponse {
+  provider: TimeSeriesProviderId;
+  providerName: string;
+  executionMode: 'external-cloud-cluster' | 'local-timeseries-runtime';
+  bucketWindow: TimeSeriesBucketWindow;
+  retentionDays: number;
+  prunedCount: number;
+  totalPoints: number;
+  latencyMs: number;
+  queryPreview: string;
+  retentionPolicyPreview: string;
+  buckets: TimeSeriesBucketSummary[];
+  recentPoints: TimeSeriesMetricPoint[];
+}
+
+export type PsychologicalIndexKey =
+  | 'mood'
+  | 'anxiety'
+  | 'burnout'
+  | 'resilience'
+  | 'social-connection'
+  | 'self-esteem'
+  | 'life-satisfaction'
+  | 'emotional-stability';
+
+export interface PsychologicalIndexPoint {
+  id: string;
+  label: string;
+  score: number;
+}
+
+export interface PsychologicalIndexMetric {
+  key: PsychologicalIndexKey;
+  label: string;
+  polarity: 'protective' | 'strain';
+  score: number;
+  scale5: number;
+  status: string;
+  deltaText: string;
+  formulaNote: string;
+  interpretation: string;
+  series: PsychologicalIndexPoint[];
+  hasData: boolean;
+}
+
+export interface PsychologicalIndexSuite {
+  indices: PsychologicalIndexMetric[];
+  sampleCount: number;
+  assessmentCount: number;
+  relationshipCount: number;
+  overallEquilibrium: number;
+  retentionDays: number;
+}
+
+export type RiskSignalKey =
+  | 'burnout-risk'
+  | 'relationship-risk'
+  | 'stress-escalation'
+  | 'isolation-risk'
+  | 'conflict-probability'
+  | 'emotional-decline';
+
+export type RiskTier = 'Low' | 'Watchful' | 'Elevated';
+
+export type RiskTrend = 'Rising' | 'Steady' | 'Easing' | 'Baseline';
+
+export interface RiskForecastMetric {
+  key: RiskSignalKey;
+  label: string;
+  category: 'stress-burnout' | 'relational-conflict';
+  probability: number;
+  tier: RiskTier;
+  trend: RiskTrend;
+  drivers: string[];
+  preventiveStep: string;
+  hasData: boolean;
+}
+
+export interface RiskForecastSuite {
+  signals: RiskForecastMetric[];
+  aggregateRisk: number;
+  elevatedCount: number;
+  watchfulCount: number;
+  retentionDays: number;
+}
+
+export interface PersonalInsightBrief {
+  id: string;
+  createdAt: string;
+  dateKey: string;
+  todayMood: number;
+  moodLabel: string;
+  energyLevel: number;
+  stressScore: number;
+  todaysReflection: string;
+  headline: string;
+  personalInsight: string;
+  energyStressNote: string;
+  patternConnection: string;
+  reflectiveQuestion: string;
+  gentleStep: string;
+  crisisDetected: boolean;
+  safetyCategories: CrisisRiskCategory[];
+}
+
+export type ConflictReportScope =
+  | 'Partner Dynamics'
+  | 'Family Insights'
+  | 'Work Relationship Analysis'
+  | 'Cross-System Conflict';
+
+export interface ConflictReport {
+  id: string;
+  createdAt: string;
+  scope: ConflictReportScope;
+  title: string;
+  deEscalationUrgency: 'Low' | 'Moderate' | 'Elevated';
+  conflictSummary: string;
+  coreTriggers: string[];
+  selfNeeds: string[];
+  otherNeeds: string[];
+  communicationBreakdown: string;
+  repairOptions: string[];
+  constructiveScript: string;
+  reflectionQuestion: string;
+  crisisDetected: boolean;
+  safetyCategories: CrisisRiskCategory[];
+}
+
+export interface CommentReviewRecord {
+  id: string;
+  createdAt: string;
+  platform: SocialPlatform | 'Direct Message / Email';
+  contextComment: string;
+  draftReply: string;
+  toxicityScore: number;
+  toxicityTier: 'Low' | 'Moderate' | 'High';
+  commentVerdict: 'Safe to Post' | 'Pause & Soften' | 'Reframe Recommended';
+  toneAssessment: string;
+  hostilitySignals: string[];
+  emotionalTrigger: string;
+  likelyOutcome: string;
+  healthierRewrite: string;
+  crisisDetected: boolean;
+  safetyCategories: CrisisRiskCategory[];
+}
+
 

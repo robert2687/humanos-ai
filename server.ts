@@ -26,11 +26,35 @@ import {
   evaluateSafety,
   formatMemoryEngine,
   HUMANOS_KNOWLEDGE_CHARTER,
+  LIFE_HISTORY_DOMAINS,
+  type LifeHistoryDomain,
   orchestrateDialoguePrompt,
   routeAgents,
   USER_MODEL_DOMAINS,
   type UserModelDomain,
 } from './server/orchestrator.ts';
+import {
+  clearVectorStore,
+  indexDocumentsToProvider,
+  listVectorProviderStatuses,
+  normalizeVectorProvider,
+  searchProviderVectors,
+  type VectorRecordCategory,
+  type VectorRecordDocument,
+} from './server/vectorProviders.ts';
+import {
+  clearTimeSeriesStore,
+  getSessionRetentionDays,
+  listTimeSeriesProviderStatuses,
+  normalizeBucketWindow,
+  normalizeRetentionDays,
+  normalizeTimeSeriesProvider,
+  queryTimeSeriesBuckets,
+  setSessionRetentionDays,
+  writeTimeSeriesPoints,
+  type TimeSeriesMetricPoint,
+  type TimeSeriesSource,
+} from './server/timeSeriesProviders.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,8 +79,9 @@ function getGeminiClient(): GoogleGenAI {
 
 const VALID_DIMENSIONS = [
   'Values',
-  'Strengths',
   'Triggers',
+  'Strengths',
+  'Recurring Concerns',
   'Challenges',
   'Relational & Communication',
 ] as const;
@@ -748,8 +773,9 @@ Return valid JSON matching the schema. Keep language compassionate, probabilisti
       const prompt = `Review the user's recent reflections, event analyses, wellbeing check-ins, and existing Human Digital Twin entries below.
 Synthesize up to 4 fresh, non-redundant probabilistic observations across:
 - Values (Values Mapper)
-- Strengths (Positive Psychology strengths & resilience)
 - Triggers (Emotional Memory & sensitivities)
+- Strengths (Positive Psychology strengths & resilience)
+- Recurring Concerns (persistent worries, unresolved themes, and life tensions)
 - Challenges (Blind Spot Finder & recurring friction)
 - Relational & Communication (Attachment & Conflict dynamics)
 
@@ -1934,6 +1960,609 @@ ${contextBundle.slice(0, 12000)}`;
     }
   });
 
+  app.post('/api/agents/digital-twin', requireGatewaySession, rateLimitAI, async (req: GatewayRequest, res: Response) => {
+    const startMs = Date.now();
+    const session = req.humanosSession!;
+    const surface = normalizeSurface(req.body?.surface || session.surface);
+    const {
+      layer1Summary = '',
+      layer2Summary = '',
+      layer3Summary = '',
+      layer3Counts = {},
+      contextBundle = '',
+    } = req.body ?? {};
+
+    const combinedText = [layer1Summary, layer2Summary, layer3Summary, contextBundle]
+      .filter((part) => typeof part === 'string' && part.trim().length > 0)
+      .join('\n\n');
+    const safety = evaluateSafety(combinedText);
+    const route = routeAgents({ endpoint: 'digital-twin', safety });
+
+    try {
+      if (combinedText.trim().length < 20) {
+        return res.status(400).json({
+          error:
+            'Add reflections, Layer 2 patterns (Values, Triggers, Strengths, Recurring Concerns), or Layer 3 life-history milestones before aggregating your Layer 4 Human Digital Twin.',
+        });
+      }
+
+      const normalizedCounts: Record<LifeHistoryDomain, number> = {
+        'Career Changes': Math.max(0, Number((layer3Counts as Record<string, unknown>)?.['Career Changes']) || 0),
+        Losses: Math.max(0, Number((layer3Counts as Record<string, unknown>)?.Losses) || 0),
+        Relationships: Math.max(0, Number((layer3Counts as Record<string, unknown>)?.Relationships) || 0),
+        Achievements: Math.max(0, Number((layer3Counts as Record<string, unknown>)?.Achievements) || 0),
+        'Traumatic Events': Math.max(0, Number((layer3Counts as Record<string, unknown>)?.['Traumatic Events']) || 0),
+      };
+
+      const ai = getGeminiClient();
+      const prompt = `Act as the HUMANOS Layer 4 Human Digital Twin Architect (${route.primaryAgent}).
+Synthesize the user's aggregated Human Digital Twin — the core intelligence asset unifying all four layers:
+- Layer 1 (Active Signals & Wellbeing Telemetry): ${String(layer1Summary || 'Limited recent telemetry').slice(0, 3000)}
+- Layer 2 (Values, Triggers, Strengths, Recurring Concerns): ${String(layer2Summary || 'Limited Layer 2 entries').slice(0, 3500)}
+- Layer 3 (Formative Life History across Career Changes, Losses, Relationships, Achievements, Traumatic Events): ${String(layer3Summary || 'Limited Layer 3 timeline entries').slice(0, 3500)}
+- Additional Workspace Context: ${String(contextBundle || '').slice(0, 4000)}
+
+Rules:
+- Strictly non-diagnostic, trauma-informed, and compassionate—especially when synthesizing Traumatic Events, Losses, or Recurring Concerns.
+- Hold all interpretations probabilistically ("may", "appears", "suggests", "often"). Never assign permanent clinical labels.
+- Ground every claim in the supplied layers; if a Layer 3 life-history domain has 0 recorded events, note gently that none have been logged yet and how it relates probabilistically without inventing biography.
+- Return exact domain names for layer3Narrative covering all 5 domains: ${LIFE_HISTORY_DOMAINS.join(', ')}.`;
+
+      const response = await callGeminiWithRetry(() =>
+        ai.models.generateContent({
+          model: MODEL_NAME,
+          contents: prompt,
+          config: {
+            systemInstruction: HUMANOS_KNOWLEDGE_CHARTER,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                aggregatedSummary: { type: Type.STRING },
+                identityThesis: { type: Type.STRING },
+                decisionCompass: { type: Type.STRING },
+                protectiveLoops: { type: Type.ARRAY, items: { type: Type.STRING } },
+                resilienceLevers: { type: Type.ARRAY, items: { type: Type.STRING } },
+                layer1Signals: { type: Type.ARRAY, items: { type: Type.STRING } },
+                layer2Patterns: {
+                  type: Type.OBJECT,
+                  properties: {
+                    values: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    triggers: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    recurringConcerns: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  },
+                  required: ['values', 'triggers', 'strengths', 'recurringConcerns'],
+                },
+                layer3Narrative: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      domain: { type: Type.STRING },
+                      synthesis: { type: Type.STRING },
+                    },
+                    required: ['domain', 'synthesis'],
+                  },
+                },
+                suggestedNextInquiry: { type: Type.STRING },
+              },
+              required: [
+                'aggregatedSummary',
+                'identityThesis',
+                'decisionCompass',
+                'protectiveLoops',
+                'resilienceLevers',
+                'layer1Signals',
+                'layer2Patterns',
+                'layer3Narrative',
+                'suggestedNextInquiry',
+              ],
+            },
+          },
+        })
+      );
+
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      const toStringList = (val: unknown, max = 5): string[] =>
+        Array.isArray(val)
+          ? val.map((item) => String(item || '').trim()).filter(Boolean).slice(0, max)
+          : [];
+
+      const rawNarrative = Array.isArray(parsed.layer3Narrative) ? parsed.layer3Narrative : [];
+      const layer3Narrative = LIFE_HISTORY_DOMAINS.map((domain) => {
+        const matched = rawNarrative.find(
+          (entry: { domain?: string }) =>
+            String(entry?.domain || '').toLowerCase().trim() === domain.toLowerCase()
+        );
+        return {
+          domain,
+          count: normalizedCounts[domain],
+          synthesis:
+            String(matched?.synthesis || '').trim() ||
+            (normalizedCounts[domain] === 0
+              ? `No ${domain.toLowerCase()} milestones logged yet in Layer 3.`
+              : `Observed across ${normalizedCounts[domain]} recorded ${domain.toLowerCase()} milestone(s).`),
+        };
+      });
+
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/digital-twin',
+        routedAgent: route.primaryAgent,
+        safetyStatus: safety.status,
+        httpStatus: 200,
+        latencyMs: Date.now() - startMs,
+      });
+
+      return res.json({
+        generatedAt: new Date().toISOString(),
+        aggregatedSummary: String(parsed.aggregatedSummary || '').trim(),
+        identityThesis: String(parsed.identityThesis || '').trim(),
+        decisionCompass: String(parsed.decisionCompass || '').trim(),
+        protectiveLoops: toStringList(parsed.protectiveLoops, 4),
+        resilienceLevers: toStringList(parsed.resilienceLevers, 4),
+        layer1Signals: toStringList(parsed.layer1Signals, 4),
+        layer2Patterns: {
+          values: toStringList(parsed.layer2Patterns?.values, 4),
+          triggers: toStringList(parsed.layer2Patterns?.triggers, 4),
+          strengths: toStringList(parsed.layer2Patterns?.strengths, 4),
+          recurringConcerns: toStringList(parsed.layer2Patterns?.recurringConcerns, 4),
+        },
+        layer3Narrative,
+        suggestedNextInquiry: String(parsed.suggestedNextInquiry || '').trim(),
+        crisisDetected: safety.crisisOverride,
+        detectedRiskCategories: safety.detectedCategories,
+      });
+    } catch (err: unknown) {
+      const formatted = formatApiError(err);
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/digital-twin',
+        routedAgent: route.primaryAgent,
+        safetyStatus: safety.status,
+        httpStatus: formatted.status,
+        latencyMs: Date.now() - startMs,
+      });
+      return res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  // =========================================================================
+  // VECTOR SEARCH & SEMANTIC MEMORY: Azure AI Search, Weaviate, Qdrant, Pinecone
+  // =========================================================================
+
+  app.get('/api/vector/status', requireGatewaySession, (req: GatewayRequest, res: Response) => {
+    const session = req.humanosSession!;
+    const providers = listVectorProviderStatuses(hashSessionId(session.sid));
+    return res.json({ providers });
+  });
+
+  app.post('/api/vector/index', requireGatewaySession, rateLimitAI, async (req: GatewayRequest, res: Response) => {
+    const startMs = Date.now();
+    const session = req.humanosSession!;
+    const surface = normalizeSurface(req.body?.surface || session.surface);
+    const provider = normalizeVectorProvider(req.body?.provider);
+    const route = routeAgents({
+      endpoint: 'vector-index',
+      safety: {
+        status: 'nominal',
+        crisisOverride: false,
+        toxicitySignal: false,
+        detectedCategories: [],
+        policyNotes: [],
+      },
+    });
+
+    try {
+      const rawDocs = req.body?.documents;
+      if (!Array.isArray(rawDocs) || rawDocs.length === 0) {
+        return res.status(400).json({
+          error: 'At least one workspace record is required to index into the vector store.',
+        });
+      }
+
+      const validCategories = new Set<VectorRecordCategory>([
+        'Session',
+        'Journal',
+        'Goal',
+        'Assessment',
+        'Event Analysis',
+        'Dynamic User Model',
+      ]);
+
+      const documents: VectorRecordDocument[] = rawDocs
+        .slice(0, 60)
+        .map((doc: Partial<VectorRecordDocument>, idx: number) => ({
+          id: String(doc.id || `doc_${Date.now()}_${idx}`).slice(0, 120),
+          title: String(doc.title || 'Workspace Memory').slice(0, 180),
+          category: validCategories.has(doc.category as VectorRecordCategory)
+            ? (doc.category as VectorRecordCategory)
+            : 'Journal',
+          content: String(doc.content || '').trim().slice(0, 2500),
+          updatedAt: String(doc.updatedAt || new Date().toISOString()),
+        }))
+        .filter((d) => d.content.length > 0);
+
+      if (documents.length === 0) {
+        return res.status(400).json({ error: 'Provided documents contain no indexable text.' });
+      }
+
+      const ai = getGeminiClient();
+      const result = await callGeminiWithRetry(() =>
+        indexDocumentsToProvider({
+          ai,
+          sessionHash: hashSessionId(session.sid),
+          provider,
+          documents,
+        })
+      );
+
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/vector/index',
+        routedAgent: `${route.primaryAgent} (${result.providerName})`,
+        safetyStatus: 'nominal',
+        httpStatus: 200,
+        latencyMs: Date.now() - startMs,
+      });
+
+      return res.json({
+        ...result,
+        latencyMs: Date.now() - startMs,
+        providers: listVectorProviderStatuses(hashSessionId(session.sid)),
+      });
+    } catch (err: unknown) {
+      const formatted = formatApiError(err);
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/vector/index',
+        routedAgent: `${route.primaryAgent} (${provider})`,
+        safetyStatus: 'nominal',
+        httpStatus: formatted.status,
+        latencyMs: Date.now() - startMs,
+      });
+      return res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  app.post('/api/vector/search', requireGatewaySession, rateLimitAI, async (req: GatewayRequest, res: Response) => {
+    const startMs = Date.now();
+    const session = req.humanosSession!;
+    const surface = normalizeSurface(req.body?.surface || session.surface);
+    const provider = normalizeVectorProvider(req.body?.provider);
+    const query = String(req.body?.query || '').trim();
+    const topK = Number(req.body?.topK) || 6;
+    const rawCategory = String(req.body?.categoryFilter || 'All').trim();
+    const validCategories = new Set([
+      'All',
+      'Session',
+      'Journal',
+      'Goal',
+      'Assessment',
+      'Event Analysis',
+      'Dynamic User Model',
+    ]);
+    const categoryFilter = validCategories.has(rawCategory) ? rawCategory : 'All';
+    const safety = evaluateSafety(query);
+    const route = routeAgents({ endpoint: 'vector-search', safety });
+
+    try {
+      if (query.length < 2) {
+        return res.status(400).json({ error: 'Enter a search query (at least 2 characters).' });
+      }
+
+      const ai = getGeminiClient();
+      const result = await callGeminiWithRetry(() =>
+        searchProviderVectors({
+          ai,
+          sessionHash: hashSessionId(session.sid),
+          provider,
+          query,
+          topK,
+          categoryFilter,
+        })
+      );
+
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/vector/search',
+        routedAgent: `${route.primaryAgent} (${result.providerName})`,
+        safetyStatus: safety.status,
+        httpStatus: 200,
+        latencyMs: Date.now() - startMs,
+      });
+
+      return res.json({
+        ...result,
+        latencyMs: Date.now() - startMs,
+        crisisDetected: safety.crisisOverride,
+        detectedRiskCategories: safety.detectedCategories,
+      });
+    } catch (err: unknown) {
+      const formatted = formatApiError(err);
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/vector/search',
+        routedAgent: `${route.primaryAgent} (${provider})`,
+        safetyStatus: safety.status,
+        httpStatus: formatted.status,
+        latencyMs: Date.now() - startMs,
+      });
+      return res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  app.delete('/api/vector/clear', requireGatewaySession, (req: GatewayRequest, res: Response) => {
+    const session = req.humanosSession!;
+    const providerParam = req.query?.provider ? normalizeVectorProvider(req.query.provider) : undefined;
+    const sessionHash = hashSessionId(session.sid);
+    clearVectorStore(sessionHash, providerParam);
+    return res.json({
+      cleared: true,
+      providers: listVectorProviderStatuses(sessionHash),
+    });
+  });
+
+  // =========================================================================
+  // TIME-SERIES TELEMETRY ENGINE: TimescaleDB & InfluxDB
+  // =========================================================================
+
+  app.get('/api/timeseries/status', requireGatewaySession, (req: GatewayRequest, res: Response) => {
+    const session = req.humanosSession!;
+    const sessionHash = hashSessionId(session.sid);
+    return res.json({
+      retentionDays: getSessionRetentionDays(sessionHash),
+      providers: listTimeSeriesProviderStatuses(sessionHash),
+    });
+  });
+
+  app.post('/api/timeseries/retention', requireGatewaySession, rateLimitAI, (req: GatewayRequest, res: Response) => {
+    const startMs = Date.now();
+    const session = req.humanosSession!;
+    const surface = normalizeSurface(req.body?.surface || session.surface);
+    const rawDays = Number(req.body?.retentionDays);
+    if (!Number.isFinite(rawDays) || rawDays < 30 || rawDays > 90) {
+      return res.status(400).json({
+        error: 'Retention policy must be between 30 and 90 days.',
+      });
+    }
+
+    const sessionHash = hashSessionId(session.sid);
+    const { retentionDays, prunedCount } = setSessionRetentionDays(sessionHash, rawDays);
+    const route = routeAgents({
+      endpoint: 'timeseries-write',
+      safety: {
+        status: 'nominal',
+        crisisOverride: false,
+        toxicitySignal: false,
+        detectedCategories: [],
+        policyNotes: [],
+      },
+    });
+
+    recordAudit({
+      sessionHash,
+      surface,
+      endpoint: '/api/timeseries/retention',
+      routedAgent: `${route.primaryAgent} (${retentionDays}d policy)`,
+      safetyStatus: 'nominal',
+      httpStatus: 200,
+      latencyMs: Date.now() - startMs,
+    });
+
+    return res.json({
+      retentionDays,
+      prunedCount,
+      providers: listTimeSeriesProviderStatuses(sessionHash),
+    });
+  });
+
+  app.post('/api/timeseries/ingest', requireGatewaySession, rateLimitAI, async (req: GatewayRequest, res: Response) => {
+    const startMs = Date.now();
+    const session = req.humanosSession!;
+    const surface = normalizeSurface(req.body?.surface || session.surface);
+    const provider = normalizeTimeSeriesProvider(req.body?.provider);
+    const requestedRetention =
+      req.body?.retentionDays !== undefined
+        ? normalizeRetentionDays(req.body.retentionDays)
+        : undefined;
+    const route = routeAgents({
+      endpoint: 'timeseries-write',
+      safety: {
+        status: 'nominal',
+        crisisOverride: false,
+        toxicitySignal: false,
+        detectedCategories: [],
+        policyNotes: [],
+      },
+    });
+
+    try {
+      const rawPoints = req.body?.points;
+      if (!Array.isArray(rawPoints) || rawPoints.length === 0) {
+        return res.status(400).json({
+          error: 'At least one wellbeing check-in, smart-watch pulse, or assessment point is required for time-series ingestion.',
+        });
+      }
+
+      const clampMetric = (val: unknown, fallback = 3) => {
+        const num = Number(val);
+        if (!Number.isFinite(num)) return fallback;
+        return Number(Math.min(5, Math.max(1, num)).toFixed(2));
+      };
+
+      const validSources = new Set<TimeSeriesSource>([
+        'wellbeing-checkin',
+        'smart-watch',
+        'assessment',
+      ]);
+
+      const points: TimeSeriesMetricPoint[] = rawPoints
+        .slice(0, 100)
+        .map((pt: Partial<TimeSeriesMetricPoint>, idx: number) => {
+          const parsedMs = Date.parse(String(pt.timestamp || ''));
+          const timestamp = Number.isFinite(parsedMs)
+            ? new Date(parsedMs).toISOString()
+            : new Date().toISOString();
+          const source: TimeSeriesSource = validSources.has(pt.source as TimeSeriesSource)
+            ? (pt.source as TimeSeriesSource)
+            : 'wellbeing-checkin';
+          const rawScore = Number(pt.assessmentScore);
+          const assessmentScore = Number.isFinite(rawScore)
+            ? Number(Math.min(100, Math.max(0, rawScore)).toFixed(1))
+            : undefined;
+
+          const rawSleepHours = Number(pt.sleepHours);
+          const sleepHours = Number.isFinite(rawSleepHours)
+            ? Number(Math.min(14, Math.max(0, rawSleepHours)).toFixed(1))
+            : 7;
+
+          return {
+            id: String(pt.id || `ts_${Date.now()}_${idx}`).slice(0, 120),
+            timestamp,
+            source,
+            measurement: String(pt.measurement || 'humanos_wellbeing')
+              .replace(/[^\w.-]/g, '_')
+              .slice(0, 64),
+            mood: clampMetric(pt.mood),
+            stress: clampMetric(pt.stress),
+            anxiety: clampMetric(pt.anxiety),
+            energy: clampMetric(pt.energy),
+            resilience: clampMetric(pt.resilience),
+            burnoutLoad: clampMetric(pt.burnoutLoad),
+            sleepHours,
+            sleepQuality: clampMetric(pt.sleepQuality, 3),
+            ...(assessmentScore !== undefined ? { assessmentScore } : {}),
+          };
+        });
+
+      const sessionHash = hashSessionId(session.sid);
+      const result = await writeTimeSeriesPoints({
+        sessionHash,
+        provider,
+        points,
+        retentionDays: requestedRetention,
+      });
+
+      recordAudit({
+        sessionHash,
+        surface,
+        endpoint: '/api/timeseries/ingest',
+        routedAgent: `${route.primaryAgent} (${result.providerName})`,
+        safetyStatus: 'nominal',
+        httpStatus: 200,
+        latencyMs: Date.now() - startMs,
+      });
+
+      return res.json({
+        ...result,
+        latencyMs: Date.now() - startMs,
+        providers: listTimeSeriesProviderStatuses(sessionHash),
+      });
+    } catch (err: unknown) {
+      const formatted = formatApiError(err);
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/timeseries/ingest',
+        routedAgent: `${route.primaryAgent} (${provider})`,
+        safetyStatus: 'nominal',
+        httpStatus: formatted.status,
+        latencyMs: Date.now() - startMs,
+      });
+      return res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  app.post('/api/timeseries/query', requireGatewaySession, rateLimitAI, async (req: GatewayRequest, res: Response) => {
+    const startMs = Date.now();
+    const session = req.humanosSession!;
+    const surface = normalizeSurface(req.body?.surface || session.surface);
+    const provider = normalizeTimeSeriesProvider(req.body?.provider);
+    const bucketWindow = normalizeBucketWindow(req.body?.bucketWindow);
+    const requestedRetention =
+      req.body?.retentionDays !== undefined
+        ? normalizeRetentionDays(req.body.retentionDays)
+        : undefined;
+    const rawSource = String(req.body?.sourceFilter || 'all').trim();
+    const validSourceFilters = new Set([
+      'all',
+      'wellbeing-checkin',
+      'smart-watch',
+      'assessment',
+    ]);
+    const sourceFilter = validSourceFilters.has(rawSource) ? rawSource : 'all';
+    const route = routeAgents({
+      endpoint: 'timeseries-query',
+      safety: {
+        status: 'nominal',
+        crisisOverride: false,
+        toxicitySignal: false,
+        detectedCategories: [],
+        policyNotes: [],
+      },
+    });
+
+    try {
+      const sessionHash = hashSessionId(session.sid);
+      const result = await queryTimeSeriesBuckets({
+        sessionHash,
+        provider,
+        bucketWindow,
+        sourceFilter,
+        retentionDays: requestedRetention,
+      });
+
+      recordAudit({
+        sessionHash,
+        surface,
+        endpoint: '/api/timeseries/query',
+        routedAgent: `${route.primaryAgent} (${result.providerName})`,
+        safetyStatus: 'nominal',
+        httpStatus: 200,
+        latencyMs: Date.now() - startMs,
+      });
+
+      return res.json({
+        ...result,
+        latencyMs: Date.now() - startMs,
+      });
+    } catch (err: unknown) {
+      const formatted = formatApiError(err);
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/timeseries/query',
+        routedAgent: `${route.primaryAgent} (${provider})`,
+        safetyStatus: 'nominal',
+        httpStatus: formatted.status,
+        latencyMs: Date.now() - startMs,
+      });
+      return res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  app.delete('/api/timeseries/clear', requireGatewaySession, (req: GatewayRequest, res: Response) => {
+    const session = req.humanosSession!;
+    const providerParam = req.query?.provider
+      ? normalizeTimeSeriesProvider(req.query.provider)
+      : undefined;
+    const sessionHash = hashSessionId(session.sid);
+    clearTimeSeriesStore(sessionHash, providerParam);
+    return res.json({
+      cleared: true,
+      providers: listTimeSeriesProviderStatuses(sessionHash),
+    });
+  });
+
   // =========================================================================
   // COMPANION SURFACE ENDPOINTS: Browser Extension & Smart Watch Integration
   // =========================================================================
@@ -2040,14 +2669,21 @@ Consider ${normalizedPlatform}'s social and communication dynamics (visibility, 
       moodPulse = 3,
       restingStress = 3,
       energy = 3,
+      sleepHours = 7,
+      sleepQuality = 3,
       breathingMinutes = 0,
     } = req.body ?? {};
 
     const clamp = (n: unknown) => Math.min(5, Math.max(1, Math.round(Number(n) || 3)));
+    const rawSleep = Number(sleepHours);
     const normalized = {
       mood: clamp(moodPulse),
       stress: clamp(restingStress),
       energy: clamp(energy),
+      sleepHours: Number.isFinite(rawSleep)
+        ? Number(Math.min(14, Math.max(0, rawSleep)).toFixed(1))
+        : 7,
+      sleepQuality: clamp(sleepQuality),
       breathingMinutes: Math.max(0, Math.min(60, Math.round(Number(breathingMinutes) || 0))),
       syncedAt: new Date().toISOString(),
     };
@@ -2077,10 +2713,498 @@ Consider ${normalizedPlatform}'s social and communication dynamics (visibility, 
       synced: true,
       pulse: normalized,
       guidance:
-        normalized.stress >= 4 && normalized.energy <= 2
-          ? 'Watch pulse shows elevated stress alongside lower energy—consider a brief 4-4-6 breathing pause before your next commitment.'
-          : 'Watch pulse synced cleanly to your Wellbeing Monitor.',
+        normalized.sleepHours < 6 && normalized.stress >= 4
+          ? 'Watch telemetry shows shorter sleep alongside elevated resting stress—protect recovery tonight and keep demands light where possible.'
+          : normalized.stress >= 4 && normalized.energy <= 2
+            ? 'Watch pulse shows elevated stress alongside lower energy—consider a brief 4-4-6 breathing pause before your next commitment.'
+            : 'Watch pulse and sleep telemetry synced cleanly to your Wellbeing Monitor.',
     });
+  });
+
+  // =========================================================================
+  // DAILY CHECK-IN AGENT: Today Mood, Energy Level, Stress Score & Reflection
+  // =========================================================================
+
+  app.post('/api/agents/personal-insight', requireGatewaySession, rateLimitAI, async (req: GatewayRequest, res: Response) => {
+    const startMs = Date.now();
+    const session = req.humanosSession!;
+    const surface = normalizeSurface(req.body?.surface || session.surface);
+    const {
+      todayMood = 3,
+      moodLabel = 'Steady',
+      energyLevel = 3,
+      stressScore = 3,
+      todaysReflection = '',
+      indicesSummary = '',
+      riskSummary = '',
+      layer2Summary = '',
+    } = req.body ?? {};
+
+    const clamp5 = (n: unknown) => Math.min(5, Math.max(1, Math.round(Number(n) || 3)));
+    const moodVal = clamp5(todayMood);
+    const energyVal = clamp5(energyLevel);
+    const stressVal = clamp5(stressScore);
+    const reflectionText = String(todaysReflection || '').trim().slice(0, 3000);
+
+    const safety = evaluateSafety(reflectionText);
+    const route = routeAgents({ endpoint: 'personal-insight', safety });
+
+    try {
+      const ai = getGeminiClient();
+      const prompt = `Generate a warm, grounded, non-diagnostic Personal Insight brief for today's check-in.
+
+TODAY'S CHECK-IN METRICS:
+- Today Mood: ${moodVal}/5 (${String(moodLabel || 'Steady').slice(0, 40)})
+- Energy Level: ${energyVal}/5 (${Math.round(((energyVal - 1) / 4) * 100)}%)
+- Stress Score: ${stressVal}/5 (${Math.round(((stressVal - 1) / 4) * 100)}% load)
+- Today's Reflection: ${reflectionText ? `"${reflectionText}"` : '(No written reflection shared today; respond gently to the numerical check-in posture.)'}
+
+LONGITUDINAL CONTEXT:
+${String(indicesSummary || '').slice(0, 1200)}
+${String(riskSummary || '').slice(0, 1200)}
+${String(layer2Summary || '').slice(0, 1200)}
+
+${safety.policyNotes.length > 0 ? `SAFETY GUIDANCE:\n${safety.policyNotes.join('\n')}` : ''}
+
+Respond strictly in JSON matching the schema:
+- headline: concise 4-8 word editorial title summarizing today's emotional & nervous-system posture.
+- personalInsight: 2-4 compassionate, insightful sentences connecting Today Mood, Energy Level, Stress Score, and Today's Reflection (if provided) without diagnosing or lecturing.
+- energyStressNote: 1-2 sentences interpreting how today's Energy Level (${energyVal}/5) and Stress Score (${stressVal}/5) interact right now.
+- patternConnection: 1-2 sentences linking today's state gently to recurring values, needs, or longer-term patterns if context is present, or offering a probabilistic hypothesis if early.
+- reflectiveQuestion: 1 open, respectful question inviting gentle curiosity.
+- gentleStep: 1 concrete, low-friction step suitable for today's energy level.`;
+
+      const response = await callGeminiWithRetry(() =>
+        ai.models.generateContent({
+          model: MODEL_NAME,
+          contents: prompt,
+          config: {
+            systemInstruction: HUMANOS_KNOWLEDGE_CHARTER,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                headline: { type: Type.STRING },
+                personalInsight: { type: Type.STRING },
+                energyStressNote: { type: Type.STRING },
+                patternConnection: { type: Type.STRING },
+                reflectiveQuestion: { type: Type.STRING },
+                gentleStep: { type: Type.STRING },
+                crisisDetected: { type: Type.BOOLEAN },
+                detectedRiskCategories: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+              },
+              required: [
+                'headline',
+                'personalInsight',
+                'energyStressNote',
+                'patternConnection',
+                'reflectiveQuestion',
+                'gentleStep',
+                'crisisDetected',
+                'detectedRiskCategories',
+              ],
+            },
+          },
+        })
+      );
+
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      const mergedCategories = mergeRiskCategories(
+        safety.detectedCategories,
+        parsed.detectedRiskCategories
+      );
+      const crisisDetected = Boolean(safety.crisisOverride || parsed.crisisDetected);
+
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/personal-insight',
+        routedAgent: route.primaryAgent,
+        safetyStatus: crisisDetected ? 'crisis-override' : safety.status,
+        httpStatus: 200,
+        latencyMs: Date.now() - startMs,
+      });
+
+      return res.json({
+        headline: String(parsed.headline || 'Today’s Emotional & Energy Posture'),
+        personalInsight: String(parsed.personalInsight || ''),
+        energyStressNote: String(parsed.energyStressNote || ''),
+        patternConnection: String(parsed.patternConnection || ''),
+        reflectiveQuestion: String(parsed.reflectiveQuestion || ''),
+        gentleStep: String(parsed.gentleStep || ''),
+        crisisDetected,
+        safetyCategories: mergedCategories,
+      });
+    } catch (err: unknown) {
+      const formatted = formatApiError(err);
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/personal-insight',
+        routedAgent: route.primaryAgent,
+        safetyStatus: safety.status,
+        httpStatus: formatted.status,
+        latencyMs: Date.now() - startMs,
+      });
+      return res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  // =========================================================================
+  // CONFLICT REPORTS AGENT: Structured De-Escalation & Repair Synthesis
+  // =========================================================================
+
+  app.post('/api/agents/conflict-report', requireGatewaySession, rateLimitAI, async (req: GatewayRequest, res: Response) => {
+    const startMs = Date.now();
+    const session = req.humanosSession!;
+    const surface = normalizeSurface(req.body?.surface || session.surface);
+    const {
+      scope = 'Cross-System Conflict',
+      focusPrompt = '',
+      mappedNodesSummary = '',
+      areaInsightsSummary = '',
+      conflictEventsSummary = '',
+      riskPostureSummary = '',
+    } = req.body ?? {};
+
+    const validScopes = new Set([
+      'Partner Dynamics',
+      'Family Insights',
+      'Work Relationship Analysis',
+      'Cross-System Conflict',
+    ]);
+    const normalizedScope = validScopes.has(String(scope))
+      ? String(scope)
+      : 'Cross-System Conflict';
+
+    const combinedContext = [
+      String(focusPrompt || ''),
+      String(mappedNodesSummary || ''),
+      String(areaInsightsSummary || ''),
+      String(conflictEventsSummary || ''),
+    ].join('\n');
+
+    const safety = evaluateSafety(combinedContext);
+    const route = routeAgents({ endpoint: 'conflict-report', safety });
+    let routedAgent = route.primaryAgent;
+    let safetyStatus = safety.status;
+
+    try {
+      if (combinedContext.trim().length < 12) {
+        return res.status(400).json({
+          error:
+            'Add a brief conflict description, map a relationship node, or log an Event Lab conflict before generating a Conflict Report.',
+        });
+      }
+
+      const ai = getGeminiClient();
+      const prompt = `Act as the HUMANOS Conflict Mediator & Relationship Specialist. Produce a balanced, non-judgmental, actionable Conflict Report.
+
+SCOPE: ${normalizedScope}
+USER FOCUS / INCIDENT DESCRIPTION:
+${String(focusPrompt || 'Synthesize recurring friction patterns from the relational and event records below.').slice(0, 2500)}
+
+MAPPED RELATIONSHIP NODES:
+${String(mappedNodesSummary || 'None mapped yet').slice(0, 2000)}
+
+SAVED AREA DYNAMICS INSIGHTS:
+${String(areaInsightsSummary || 'None saved yet').slice(0, 2000)}
+
+CONFLICT & RELATIONAL EVENT LAB RECORDS:
+${String(conflictEventsSummary || 'None recorded yet').slice(0, 2000)}
+
+6-SIGNAL PREDICTIVE RISK POSTURE:
+${String(riskPostureSummary || 'Not supplied').slice(0, 800)}
+
+${safety.policyNotes.length > 0 ? `SAFETY GUIDANCE:\n${safety.policyNotes.join('\n')}` : ''}
+
+Instructions:
+- Remain completely neutral, compassionate, and non-diagnostic.
+- Distinguish facts from reactive interpretations; surface core emotional triggers and unmet needs on both sides.
+- Provide concrete, de-escalating repair options and a short, calm, first-person communication script ("I notice... / I need... / Would you be open to...").
+- Classify deEscalationUrgency as strictly "Low", "Moderate", or "Elevated".`;
+
+      const response = await callGeminiWithRetry(() =>
+        ai.models.generateContent({
+          model: MODEL_NAME,
+          contents: prompt,
+          config: {
+            systemInstruction: HUMANOS_KNOWLEDGE_CHARTER,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                deEscalationUrgency: { type: Type.STRING, description: 'Low, Moderate, or Elevated' },
+                conflictSummary: { type: Type.STRING },
+                coreTriggers: { type: Type.ARRAY, items: { type: Type.STRING } },
+                selfNeeds: { type: Type.ARRAY, items: { type: Type.STRING } },
+                otherNeeds: { type: Type.ARRAY, items: { type: Type.STRING } },
+                communicationBreakdown: { type: Type.STRING },
+                repairOptions: { type: Type.ARRAY, items: { type: Type.STRING } },
+                constructiveScript: { type: Type.STRING },
+                reflectionQuestion: { type: Type.STRING },
+                crisisDetected: { type: Type.BOOLEAN },
+                detectedRiskCategories: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+              },
+              required: [
+                'title',
+                'deEscalationUrgency',
+                'conflictSummary',
+                'coreTriggers',
+                'selfNeeds',
+                'otherNeeds',
+                'communicationBreakdown',
+                'repairOptions',
+                'constructiveScript',
+                'reflectionQuestion',
+                'crisisDetected',
+                'detectedRiskCategories',
+              ],
+            },
+          },
+        })
+      );
+
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      const detectedRiskCategories = mergeRiskCategories(
+        safety.detectedCategories,
+        parsed.detectedRiskCategories
+      );
+      const finalCrisis = Boolean(
+        parsed.crisisDetected || safety.crisisOverride || detectedRiskCategories.length > 0
+      );
+      if (finalCrisis) {
+        safetyStatus = 'crisis-override';
+        routedAgent = 'Crisis Guardian';
+      }
+
+      const rawUrgency = String(parsed.deEscalationUrgency || 'Moderate');
+      const urgency: 'Low' | 'Moderate' | 'Elevated' =
+        rawUrgency === 'Elevated' || rawUrgency === 'Low' ? rawUrgency : 'Moderate';
+
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/conflict-report',
+        routedAgent,
+        safetyStatus,
+        httpStatus: 200,
+        latencyMs: Date.now() - startMs,
+      });
+
+      return res.json({
+        scope: normalizedScope,
+        title: String(parsed.title || `${normalizedScope} · Conflict & Repair Brief`),
+        deEscalationUrgency: urgency,
+        conflictSummary: String(parsed.conflictSummary || ''),
+        coreTriggers: Array.isArray(parsed.coreTriggers) ? parsed.coreTriggers.slice(0, 5) : [],
+        selfNeeds: Array.isArray(parsed.selfNeeds) ? parsed.selfNeeds.slice(0, 5) : [],
+        otherNeeds: Array.isArray(parsed.otherNeeds) ? parsed.otherNeeds.slice(0, 5) : [],
+        communicationBreakdown: String(parsed.communicationBreakdown || ''),
+        repairOptions: Array.isArray(parsed.repairOptions) ? parsed.repairOptions.slice(0, 5) : [],
+        constructiveScript: String(parsed.constructiveScript || ''),
+        reflectionQuestion: String(parsed.reflectionQuestion || ''),
+        crisisDetected: finalCrisis,
+        safetyCategories: detectedRiskCategories,
+      });
+    } catch (err: unknown) {
+      const formatted = formatApiError(err);
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/conflict-report',
+        routedAgent,
+        safetyStatus,
+        httpStatus: formatted.status,
+        latencyMs: Date.now() - startMs,
+      });
+      return res.status(formatted.status).json({ error: formatted.message });
+    }
+  });
+
+  // =========================================================================
+  // SOCIAL HEALTH & TOXICITY AGENT: Toxicity Analysis & Pre-Send Comment Review
+  // =========================================================================
+
+  app.post('/api/agents/comment-review', requireGatewaySession, rateLimitAI, async (req: GatewayRequest, res: Response) => {
+    const startMs = Date.now();
+    const session = req.humanosSession!;
+    const surface = normalizeSurface(req.body?.surface || session.surface);
+    const {
+      platform = 'Reddit',
+      contextComment = '',
+      draftReply = '',
+    } = req.body ?? {};
+
+    const validPlatforms = new Set([
+      'Facebook',
+      'Instagram',
+      'Reddit',
+      'Discord',
+      'LinkedIn',
+      'X/Twitter',
+      'Direct Message / Email',
+    ]);
+    const normalizedPlatform = validPlatforms.has(String(platform))
+      ? String(platform)
+      : 'Reddit';
+
+    const draftText = String(draftReply || '').trim();
+    const contextText = String(contextComment || '').trim();
+    const safety = evaluateSafety(`${contextText}\n${draftText}`);
+    const route = routeAgents({ endpoint: 'comment-review', safety });
+    let routedAgent = route.primaryAgent;
+    let safetyStatus = safety.status;
+
+    try {
+      if (draftText.length < 4 && contextText.length < 4) {
+        return res.status(400).json({
+          error: 'Enter a draft reply or incoming comment (at least 4 characters) for Toxicity Analysis & Comment Review.',
+        });
+      }
+
+      const ai = getGeminiClient();
+      const prompt = `Act as the HUMANOS Toxicity Detector, Pre-Send Comment Reviewer, and Conflict Mediator.
+Evaluate the social communication exchange below objectively, calmly, and without moralizing or shaming.
+
+PLATFORM / CHANNEL: ${normalizedPlatform}
+INCOMING POST OR COMMENT BEING REVIEWED:
+"${(contextText || '(Not provided — reviewing standalone draft/comment)').slice(0, 1500)}"
+
+USER'S DRAFT REPLY / COMMENT:
+"${(draftText || contextText).slice(0, 2000)}"
+
+${safety.policyNotes.length > 0 ? `SAFETY GUIDANCE:\n${safety.policyNotes.join('\n')}` : ''}
+
+Return strictly structured JSON:
+- toxicityScore: integer 0-100 estimating hostility, contempt, bait, dogpiling, passive-aggression, or escalation pressure.
+- toxicityTier: "Low" (0-34), "Moderate" (35-64), or "High" (65-100).
+- commentVerdict: "Safe to Post", "Pause & Soften", or "Reframe Recommended".
+- toneAssessment: brief phrase describing emotional tone (e.g. "Defensive & Urgent", "Measured & Curious", "Sarcastic / Sharp").
+- hostilitySignals: 0-4 short observable friction cues (e.g. "Mind reading", "Absolutist phrasing", "Contemptuous framing", or "Constructive clarity" if calm).
+- emotionalTrigger: 1 sentence identifying what boundary, fairness concern, or vulnerability likely activated this response.
+- likelyOutcome: 1-2 sentences predicting the realistic interpersonal/thread trajectory if sent unedited.
+- healthierRewrite: calm, direct, dignified alternative wording that preserves the user's real boundary or point without dehumanizing or escalating.
+- crisisDetected / detectedRiskCategories: safety screen across self-harm risk, suicide indicators, severe depression, panic attacks, emotional collapse.`;
+
+      const response = await callGeminiWithRetry(() =>
+        ai.models.generateContent({
+          model: MODEL_NAME,
+          contents: prompt,
+          config: {
+            systemInstruction: HUMANOS_KNOWLEDGE_CHARTER,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                toxicityScore: { type: Type.INTEGER },
+                toxicityTier: { type: Type.STRING, description: 'Low, Moderate, or High' },
+                commentVerdict: {
+                  type: Type.STRING,
+                  description: 'Safe to Post, Pause & Soften, or Reframe Recommended',
+                },
+                toneAssessment: { type: Type.STRING },
+                hostilitySignals: { type: Type.ARRAY, items: { type: Type.STRING } },
+                emotionalTrigger: { type: Type.STRING },
+                likelyOutcome: { type: Type.STRING },
+                healthierRewrite: { type: Type.STRING },
+                crisisDetected: { type: Type.BOOLEAN },
+                detectedRiskCategories: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+              },
+              required: [
+                'toxicityScore',
+                'toxicityTier',
+                'commentVerdict',
+                'toneAssessment',
+                'hostilitySignals',
+                'emotionalTrigger',
+                'likelyOutcome',
+                'healthierRewrite',
+                'crisisDetected',
+                'detectedRiskCategories',
+              ],
+            },
+          },
+        })
+      );
+
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      const score = Math.min(100, Math.max(0, Math.round(Number(parsed.toxicityScore) || 0)));
+      const tier: 'Low' | 'Moderate' | 'High' =
+        score >= 65 ? 'High' : score >= 35 ? 'Moderate' : 'Low';
+      const rawVerdict = String(parsed.commentVerdict || '');
+      const verdict: 'Safe to Post' | 'Pause & Soften' | 'Reframe Recommended' =
+        rawVerdict === 'Safe to Post' || rawVerdict === 'Pause & Soften' || rawVerdict === 'Reframe Recommended'
+          ? rawVerdict
+          : score >= 65
+            ? 'Reframe Recommended'
+            : score >= 35
+              ? 'Pause & Soften'
+              : 'Safe to Post';
+
+      const detectedRiskCategories = mergeRiskCategories(
+        safety.detectedCategories,
+        parsed.detectedRiskCategories
+      );
+      const finalCrisis = Boolean(
+        parsed.crisisDetected || safety.crisisOverride || detectedRiskCategories.length > 0
+      );
+      if (finalCrisis) {
+        safetyStatus = 'crisis-override';
+        routedAgent = 'Crisis Guardian';
+      }
+
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/comment-review',
+        routedAgent,
+        safetyStatus,
+        httpStatus: 200,
+        latencyMs: Date.now() - startMs,
+      });
+
+      return res.json({
+        platform: normalizedPlatform,
+        toxicityScore: score,
+        toxicityTier: tier,
+        commentVerdict: verdict,
+        toneAssessment: String(parsed.toneAssessment || 'Measured'),
+        hostilitySignals: Array.isArray(parsed.hostilitySignals)
+          ? parsed.hostilitySignals.slice(0, 5)
+          : [],
+        emotionalTrigger: String(parsed.emotionalTrigger || ''),
+        likelyOutcome: String(parsed.likelyOutcome || ''),
+        healthierRewrite: String(parsed.healthierRewrite || ''),
+        crisisDetected: finalCrisis,
+        safetyCategories: detectedRiskCategories,
+      });
+    } catch (err: unknown) {
+      const formatted = formatApiError(err);
+      recordAudit({
+        sessionHash: hashSessionId(session.sid),
+        surface,
+        endpoint: '/api/agents/comment-review',
+        routedAgent,
+        safetyStatus,
+        httpStatus: formatted.status,
+        latencyMs: Date.now() - startMs,
+      });
+      return res.status(formatted.status).json({ error: formatted.message });
+    }
   });
 
   if (process.env.NODE_ENV !== 'production') {

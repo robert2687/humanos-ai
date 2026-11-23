@@ -2,7 +2,9 @@ import { useState } from 'react';
 import { Menu, X } from 'lucide-react';
 
 export type AppTab =
+  | 'today'
   | 'dialogue'
+  | 'relationships'
   | 'event-lab'
   | 'pattern-atlas'
   | 'records'
@@ -16,7 +18,9 @@ interface HeaderProps {
 }
 
 const NAV_ITEMS: { id: AppTab; label: string }[] = [
+  { id: 'today', label: 'Today' },
   { id: 'dialogue', label: 'Dialogue' },
+  { id: 'relationships', label: 'Relationships' },
   { id: 'event-lab', label: 'Event Lab' },
   { id: 'pattern-atlas', label: 'Pattern Atlas' },
   { id: 'records', label: 'Records' },
@@ -38,7 +42,7 @@ export function Header({ activeTab, onSelectTab, onNewReflection }: HeaderProps)
         {/* Zone 1: Single text wordmark */}
         <button
           type="button"
-          onClick={() => handleNavClick('dialogue')}
+          onClick={() => handleNavClick('today')}
           className="font-serif text-xl font-medium tracking-tight text-[#1C1917] whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1E3A5F] rounded-sm"
         >
           HUMANOS
@@ -47,7 +51,7 @@ export function Header({ activeTab, onSelectTab, onNewReflection }: HeaderProps)
         {/* Zone 2: Clean single-line text nav links */}
         <nav
           aria-label="Primary navigation"
-          className="hidden md:flex items-center gap-7 text-sm font-medium text-[#57534E]"
+          className="hidden md:flex items-center gap-5 lg:gap-6 text-sm font-medium text-[#57534E]"
         >
           {NAV_ITEMS.map((item) => {
             const isActive = activeTab === item.id;

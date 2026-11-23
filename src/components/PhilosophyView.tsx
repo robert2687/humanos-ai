@@ -8,9 +8,20 @@ import {
   issueNewGatewaySession,
   RateLimitInfo,
 } from '../lib/gatewayClient';
-import { SocialPlatform, WellbeingCheckIn } from '../types/humanos';
+import {
+  SocialPlatform,
+  TimeSeriesMetricPoint,
+  VectorRecordDocument,
+  WellbeingCheckIn,
+} from '../types/humanos';
+import { VectorSearchPanel } from './VectorSearchPanel';
+import { TimeSeriesPanel } from './TimeSeriesPanel';
 
 interface PhilosophyViewProps {
+  vectorDocuments: VectorRecordDocument[];
+  timeSeriesPoints: TimeSeriesMetricPoint[];
+  retentionDays: number;
+  onChangeRetentionDays: (days: number) => void;
   onStartDialogue: () => void;
   onOpenEventLab: () => void;
   onSyncWatchPulse: (input: Omit<WellbeingCheckIn, 'id' | 'createdAt'>) => void;
@@ -75,14 +86,18 @@ const GATEWAY_MODULES = [
 ];
 
 const ORCHESTRATION_MODULES = [
-  { name: 'Agent Router', detail: 'Dispatches across Crisis, Conflict, Cognitive, Toxicity, and Twin agents' },
-  { name: 'Context Manager', detail: 'Assembles bounded conversation, Event Lab, and wellbeing context' },
-  { name: 'Memory Engine', detail: 'Maintains a confirmed-first Dynamic User Model across personality, emotional patterns, values, relationships, goals, fears, and aspirations' },
+  { name: 'Agent Router', detail: 'Dispatches across Crisis, Conflict, Cognitive, Toxicity, and Layer 4 Human Digital Twin agents' },
+  { name: 'Context Manager', detail: 'Assembles bounded conversation, Event Lab, and wellbeing context (Layer 1 active signals)' },
+  { name: 'Memory Engine', detail: 'Organizes Layer 2 (Values, Triggers, Strengths, Recurring Concerns), Layer 3 (Career Changes, Losses, Relationships, Achievements, Traumatic Events), and Layer 4 Human Digital Twin—backed by vector indexing (Azure AI Search, Weaviate, Qdrant, Pinecone) and 30–90d time-series telemetry (TimescaleDB, InfluxDB)' },
   { name: 'Safety Engine', detail: 'Pre-flight and post-flight screening for self-harm risk, suicide indicators, severe depression, panic attacks, and emotional collapse' },
   { name: 'Prompt Orchestrator', detail: 'Composes Knowledge Core + Charter + structured Gemini schemas' },
 ];
 
 export function PhilosophyView({
+  vectorDocuments,
+  timeSeriesPoints,
+  retentionDays,
+  onChangeRetentionDays,
   onStartDialogue,
   onOpenEventLab,
   onSyncWatchPulse,
@@ -123,6 +138,8 @@ export function PhilosophyView({
   const [watchMood, setWatchMood] = useState(3);
   const [watchStress, setWatchStress] = useState(3);
   const [watchEnergy, setWatchEnergy] = useState(3);
+  const [watchSleepHours, setWatchSleepHours] = useState(7);
+  const [watchSleepQuality, setWatchSleepQuality] = useState(3);
   const [watchNote, setWatchNote] = useState<string | null>(null);
 
   const loadGatewayAudit = useCallback(async () => {
@@ -217,6 +234,8 @@ export function PhilosophyView({
             moodPulse: watchMood,
             restingStress: watchStress,
             energy: watchEnergy,
+            sleepHours: watchSleepHours,
+            sleepQuality: watchSleepQuality,
             breathingMinutes: 2,
           }),
         },
@@ -234,6 +253,8 @@ export function PhilosophyView({
         motivation: data.pulse.energy,
         energy: data.pulse.energy,
         lifeSatisfaction: data.pulse.mood,
+        sleepHours: data.pulse.sleepHours,
+        sleepQuality: data.pulse.sleepQuality,
         note: 'Synced from Smart Watch micro-pulse',
       });
       setWatchNote(data.guidance);
@@ -687,6 +708,35 @@ export function PhilosophyView({
                     className="w-full accent-[#1E3A5F]"
                   />
                 </div>
+                <div>
+                  <div className="flex justify-between mb-1">
+                    <span>Sleep Duration</span>
+                    <span className="font-mono tabular-nums">{watchSleepHours.toFixed(1)}h</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={12}
+                    step={0.5}
+                    value={watchSleepHours}
+                    onChange={(e) => setWatchSleepHours(Number(e.target.value))}
+                    className="w-full accent-[#1E3A5F]"
+                  />
+                </div>
+                <div>
+                  <div className="flex justify-between mb-1">
+                    <span>Sleep Quality</span>
+                    <span className="font-mono tabular-nums">{watchSleepQuality}/5</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={1}
+                    max={5}
+                    value={watchSleepQuality}
+                    onChange={(e) => setWatchSleepQuality(Number(e.target.value))}
+                    className="w-full accent-[#1E3A5F]"
+                  />
+                </div>
               </div>
 
               <button
@@ -703,6 +753,20 @@ export function PhilosophyView({
               )}
             </form>
           </section>
+
+          {/* Vector Search & Semantic Memory Providers */}
+          <VectorSearchPanel
+            documents={vectorDocuments}
+            onAfterOperation={loadGatewayAudit}
+          />
+
+          {/* Time-Series Telemetry Engine: TimescaleDB & InfluxDB */}
+          <TimeSeriesPanel
+            points={timeSeriesPoints}
+            retentionDays={retentionDays}
+            onChangeRetentionDays={onChangeRetentionDays}
+            onAfterOperation={loadGatewayAudit}
+          />
 
           {/* Privacy-Preserving Audit & Compliance Ledger */}
           <section className="space-y-4">

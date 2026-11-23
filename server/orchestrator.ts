@@ -90,6 +90,21 @@ export const USER_MODEL_DOMAINS: ReadonlyArray<{
   },
 ];
 
+export type LifeHistoryDomain =
+  | 'Career Changes'
+  | 'Losses'
+  | 'Relationships'
+  | 'Achievements'
+  | 'Traumatic Events';
+
+export const LIFE_HISTORY_DOMAINS: readonly LifeHistoryDomain[] = [
+  'Career Changes',
+  'Losses',
+  'Relationships',
+  'Achievements',
+  'Traumatic Events',
+];
+
 export interface SafetyEvaluation {
   status: SafetyStatus;
   crisisOverride: boolean;
@@ -274,8 +289,16 @@ export function routeAgents(params: {
     | 'crisis-guardian'
     | 'user-model'
     | 'report'
+    | 'digital-twin'
+    | 'vector-index'
+    | 'vector-search'
+    | 'timeseries-write'
+    | 'timeseries-query'
     | 'extension-pause'
-    | 'watch-pulse';
+    | 'watch-pulse'
+    | 'personal-insight'
+    | 'conflict-report'
+    | 'comment-review';
   mode?: string;
   lens?: string;
   safety: SafetyEvaluation;
@@ -287,6 +310,20 @@ export function routeAgents(params: {
       routingRationale: params.safety.detectedCategories.length
         ? `Safety screening flagged ${params.safety.detectedCategories.join(', ')}; prioritizing calm stabilization and human support.`
         : 'Crisis Guardian screening across self-harm risk, suicide indicators, severe depression, panic attacks, and emotional collapse.',
+    };
+  }
+
+  if (params.endpoint === 'digital-twin') {
+    return {
+      primaryAgent: 'Human Digital Twin · Layer 4 Core Asset',
+      supportingAgents: [
+        'Memory Engine · Layer 2 Patterns',
+        'Life History Analyst · Layer 3',
+        'Values Mapper',
+        'Ethics & Trust Guardian',
+      ],
+      routingRationale:
+        'Aggregates Layer 1 active signals, Layer 2 (Values, Triggers, Strengths, Recurring Concerns), and Layer 3 (Career Changes, Losses, Relationships, Achievements, Traumatic Events) into the core Human Digital Twin.',
     };
   }
 
@@ -305,6 +342,33 @@ export function routeAgents(params: {
       supportingAgents: ['Wellbeing Monitor', 'Values Mapper', 'Purpose & Growth Coach', 'Ethics & Trust Guardian'],
       routingRationale:
         'Longitudinal HUMANOS Report synthesis across Users, Sessions, Goals, Journals, and Assessments.',
+    };
+  }
+
+  if (params.endpoint === 'vector-index' || params.endpoint === 'vector-search') {
+    return {
+      primaryAgent: 'Memory Engine · Vector Index',
+      supportingAgents: ['Context Manager', 'Values Mapper', 'Emotional Memory'],
+      routingRationale:
+        'Semantic and hybrid memory indexing/retrieval across Azure AI Search, Weaviate, Qdrant, and Pinecone.',
+    };
+  }
+
+  if (params.endpoint === 'timeseries-write' || params.endpoint === 'timeseries-query') {
+    return {
+      primaryAgent: 'Wellbeing Monitor · Time-Series',
+      supportingAgents: ['Burnout Predictor', 'Resilience Score', 'Anxiety Risk Monitor'],
+      routingRationale:
+        'Temporal metric ingestion and bucketed trend rollups across TimescaleDB and InfluxDB.',
+    };
+  }
+
+  if (params.endpoint === 'personal-insight') {
+    return {
+      primaryAgent: 'Personal Insight Guide',
+      supportingAgents: ['Wellbeing Monitor', 'Emotional Intelligence Analyst', 'Values Mapper'],
+      routingRationale:
+        'Daily check-in synthesis across Today Mood, Energy Level, Stress Score, and Today’s Reflection.',
     };
   }
 
@@ -335,6 +399,15 @@ export function routeAgents(params: {
     };
   }
 
+  if (params.endpoint === 'conflict-report') {
+    return {
+      primaryAgent: 'Conflict Mediator',
+      supportingAgents: ['Relationship Specialist', 'Emotional Intelligence Analyst', 'Ethics & Trust Guardian'],
+      routingRationale:
+        'Structured de-escalation dossier synthesizing triggers, reciprocal needs, communication breakdowns, and repair scripts.',
+    };
+  }
+
   if (params.endpoint === 'personality-analyst') {
     return {
       primaryAgent: 'Personality Analyst',
@@ -343,11 +416,17 @@ export function routeAgents(params: {
     };
   }
 
-  if (params.endpoint === 'extension-pause' || params.lens === 'digital-check' || params.mode === 'digital-pause') {
+  if (
+    params.endpoint === 'extension-pause' ||
+    params.endpoint === 'comment-review' ||
+    params.lens === 'digital-check' ||
+    params.mode === 'digital-pause'
+  ) {
     return {
       primaryAgent: 'Toxicity Detector',
-      supportingAgents: ['Conflict Mediator', 'Emotional Intelligence Analyst'],
-      routingRationale: 'Digital communication pause lens selected.',
+      supportingAgents: ['Conflict Mediator', 'Emotional Intelligence Analyst', 'Ethics & Trust Guardian'],
+      routingRationale:
+        'Toxicity Analysis, Comment Review, and Digital Communication Pause screening.',
     };
   }
 

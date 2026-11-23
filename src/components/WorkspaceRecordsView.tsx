@@ -11,8 +11,18 @@ import {
   UserCheck,
 } from 'lucide-react';
 import { gatewayFetch, GatewaySessionInfo, RateLimitInfo } from '../lib/gatewayClient';
+import { buildWorkspaceVectorDocuments } from '../lib/vectorDocuments';
+import {
+  computePsychologicalIndices,
+  formatPsychologicalIndicesSummary,
+} from '../lib/psychologicalIndices';
+import {
+  computeRiskForecasts,
+  formatRiskForecastSummary,
+} from '../lib/riskForecasts';
 import { detectClientCrisisCategories } from '../hooks/useHumanosStore';
 import { CrisisBanner } from './CrisisSupportView';
+import { VectorSearchPanel } from './VectorSearchPanel';
 import {
   AssessmentInstrument,
   AssessmentRecord,
@@ -31,6 +41,7 @@ import {
   PatternHypothesis,
   ReflectionMode,
   ReflectionSession,
+  RelationshipAreaInsight,
   RelationshipNode,
   ReportKind,
   UserProfile,
@@ -43,7 +54,8 @@ export type RecordSection =
   | 'goals'
   | 'journals'
   | 'assessments'
-  | 'reports';
+  | 'reports'
+  | 'vector';
 
 interface WorkspaceRecordsViewProps {
   users: UserProfile[];
@@ -61,6 +73,8 @@ interface WorkspaceRecordsViewProps {
   growthPlans: GrowthAreaPlan[];
   timelineEvents: LifeTimelineEvent[];
   relationships: RelationshipNode[];
+  relationshipInsights?: RelationshipAreaInsight[];
+  retentionDays?: number;
   dynamicUserModel: DynamicUserModel;
   onCreateUser: (input: {
     displayName: string;
@@ -221,6 +235,8 @@ export function WorkspaceRecordsView({
   growthPlans,
   timelineEvents,
   relationships,
+  relationshipInsights = [],
+  retentionDays = 90,
   dynamicUserModel,
   onCreateUser,
   onSelectUser,
@@ -573,6 +589,26 @@ export function WorkspaceRecordsView({
         .map((r) => `[Relationship ${r.name} (${r.area})]: Closeness ${r.closeness}/5 Tension ${r.tension}/5`)
         .join('\n');
 
+      const indexSuite = computePsychologicalIndices({
+        wellbeingCheckIns,
+        assessments,
+        relationships,
+        retentionDays,
+      });
+      const indicesBlock = formatPsychologicalIndicesSummary(indexSuite);
+      const riskBlock = formatRiskForecastSummary(
+        computeRiskForecasts({
+          wellbeingCheckIns,
+          assessments,
+          relationships,
+          relationshipInsights,
+          eventAnalyses,
+          sessions,
+          indexSuite,
+          retentionDays,
+        })
+      );
+
       const recordsOnly = [
         sessionLines,
         goalLines,
@@ -580,6 +616,8 @@ export function WorkspaceRecordsView({
         journalLines,
         assessmentLines,
         wellbeingLines,
+        indicesBlock,
+        riskBlock,
         eventLines,
         modelLines,
         hypLines,
@@ -652,6 +690,19 @@ export function WorkspaceRecordsView({
 
   const latestAssessmentWithCrisis = assessments.find((a) => a.crisisDetected);
 
+  const vectorDocuments = useMemo(
+    () =>
+      buildWorkspaceVectorDocuments({
+        sessions,
+        journalEntries,
+        goals,
+        assessments,
+        eventAnalyses,
+        dynamicUserModel,
+      }),
+    [sessions, journalEntries, goals, assessments, eventAnalyses, dynamicUserModel]
+  );
+
   return (
     <div className="max-w-[1360px] mx-auto px-4 sm:px-8 py-10 space-y-8">
       {/* Header Overview */}
@@ -689,6 +740,7 @@ export function WorkspaceRecordsView({
             { id: 'journals', label: `Journals (${journalEntries.length})` },
             { id: 'assessments', label: `Assessments (${assessments.length})` },
             { id: 'reports', label: `Reports (${reports.length})` },
+            { id: 'vector', label: `Vector Search (${vectorDocuments.length})` },
           ] as const
         ).map((tab) => {
           const active = section === tab.id;
@@ -1899,6 +1951,13 @@ export function WorkspaceRecordsView({
             </div>
           )}
         </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* 7. VECTOR SEARCH (AZURE AI SEARCH, WEAVIATE, QDRANT, PINECONE) */}
+      {/* =================================================================== */}
+      {section === 'vector' && (
+        <VectorSearchPanel documents={vectorDocuments} />
       )}
     </div>
   );

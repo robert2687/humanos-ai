@@ -1,12 +1,18 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ArrowRight, Loader2, Search, Trash2 } from 'lucide-react';
 import {
+  AssessmentRecord,
   CognitiveDistortionKey,
   CognitiveDistortionReport,
+  CommentReviewRecord,
   CrisisRiskCategory,
   EventAnalysisRecord,
   EventLabLens,
+  ReflectionSession,
+  RelationshipAreaInsight,
+  RelationshipNode,
   SocialPlatform,
+  WellbeingCheckIn,
 } from '../types/humanos';
 import {
   detectClientCrisisCategories,
@@ -14,10 +20,21 @@ import {
 } from '../hooks/useHumanosStore';
 import { gatewayFetch } from '../lib/gatewayClient';
 import { CrisisBanner } from './CrisisSupportView';
+import { SocialHealthSuite } from './SocialHealthSuite';
+
+export type EventLabSection = 'events' | 'distortions' | 'social-health';
 
 interface EventLabViewProps {
   records: EventAnalysisRecord[];
   distortionReports: CognitiveDistortionReport[];
+  commentReviews: CommentReviewRecord[];
+  relationships: RelationshipNode[];
+  relationshipInsights: RelationshipAreaInsight[];
+  wellbeingCheckIns: WellbeingCheckIn[];
+  assessments: AssessmentRecord[];
+  sessions: ReflectionSession[];
+  retentionDays: number;
+  defaultSection?: EventLabSection;
   onSaveRecord: (
     record: Omit<EventAnalysisRecord, 'id' | 'createdAt'>
   ) => EventAnalysisRecord;
@@ -26,6 +43,12 @@ interface EventLabViewProps {
     report: Omit<CognitiveDistortionReport, 'id' | 'createdAt'>
   ) => CognitiveDistortionReport;
   onDeleteDistortionReport: (id: string) => void;
+  onAddCommentReview: (
+    review: Omit<CommentReviewRecord, 'id' | 'createdAt'>
+  ) => CommentReviewRecord;
+  onDeleteCommentReview: (id: string) => void;
+  onRehearseDigitalPause: (review: CommentReviewRecord) => void;
+  onOpenConflictReports: () => void;
   onDiscussInDialogue: (record: EventAnalysisRecord) => void;
   onDiscussDistortionInDialogue: (report: CognitiveDistortionReport) => void;
   onOpenCrisisSupport: () => void;
@@ -139,15 +162,31 @@ const SOCIAL_PLATFORMS: SocialPlatform[] = [
 export function EventLabView({
   records,
   distortionReports,
+  commentReviews,
+  relationships,
+  relationshipInsights,
+  wellbeingCheckIns,
+  assessments,
+  sessions,
+  retentionDays,
+  defaultSection = 'events',
   onSaveRecord,
   onDeleteRecord,
   onSaveDistortionReport,
   onDeleteDistortionReport,
+  onAddCommentReview,
+  onDeleteCommentReview,
+  onRehearseDigitalPause,
+  onOpenConflictReports,
   onDiscussInDialogue,
   onDiscussDistortionInDialogue,
   onOpenCrisisSupport,
 }: EventLabViewProps) {
-  const [labSection, setLabSection] = useState<'events' | 'distortions'>('events');
+  const [labSection, setLabSection] = useState<EventLabSection>(defaultSection);
+
+  useEffect(() => {
+    setLabSection(defaultSection);
+  }, [defaultSection]);
   const [lens, setLens] = useState<EventLabLens>('conflict-emotion');
   const [socialPlatform, setSocialPlatform] = useState<SocialPlatform>('Reddit');
   const [contextCategory, setContextCategory] =
@@ -326,6 +365,17 @@ export function EventLabView({
           >
             Cognitive Distortions Analyzer ({distortionReports.length})
           </button>
+          <button
+            type="button"
+            onClick={() => setLabSection('social-health')}
+            className={`px-3.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+              labSection === 'social-health'
+                ? 'bg-[#FBF9F5] text-[#1C1917] shadow-xs border border-[#1C1917]/10'
+                : 'text-[#57534E] hover:text-[#1C1917]'
+            }`}
+          >
+            Social Health &amp; Toxicity ({commentReviews.length})
+          </button>
         </div>
         <div className="text-xs text-[#78716C]">
           <span>CBT + Behavioral Science</span>
@@ -334,7 +384,23 @@ export function EventLabView({
         </div>
       </div>
 
-      {labSection === 'events' ? (
+      {labSection === 'social-health' ? (
+        <SocialHealthSuite
+          commentReviews={commentReviews}
+          eventAnalyses={records}
+          relationships={relationships}
+          relationshipInsights={relationshipInsights}
+          wellbeingCheckIns={wellbeingCheckIns}
+          assessments={assessments}
+          sessions={sessions}
+          retentionDays={retentionDays}
+          onAddCommentReview={onAddCommentReview}
+          onDeleteCommentReview={onDeleteCommentReview}
+          onRehearseDigitalPause={onRehearseDigitalPause}
+          onOpenConflictReports={onOpenConflictReports}
+          onOpenCrisisSupport={onOpenCrisisSupport}
+        />
+      ) : labSection === 'events' ? (
         <>
           {/* Intro & Input Grid */}
           <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start border-b border-[#1C1917]/10 pb-10">

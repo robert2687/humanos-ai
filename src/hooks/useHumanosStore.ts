@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   AssessmentRecord,
   CognitiveDistortionReport,
+  CommentReviewRecord,
+  ConflictReport,
   CrisisRiskCategory,
   DialogueMessage,
   DynamicUserModel,
@@ -15,11 +17,14 @@ import {
   GrowthArea,
   GrowthAreaPlan,
   GrowthJournalEntry,
+  HumanDigitalTwinSnapshot,
   HumanosReport,
   HypothesisStatus,
+  LifeHistoryDomain,
   LifeTimelineEvent,
   PatternDimension,
   PatternHypothesis,
+  PersonalInsightBrief,
   PersonalityAnalystProfile,
   ReflectionMode,
   ReflectionSession,
@@ -53,6 +58,11 @@ export interface HumanosWorkspaceState {
   explainMePortrait: ExplainMePortrait | null;
   personalityProfile: PersonalityAnalystProfile | null;
   dynamicUserModel: DynamicUserModel;
+  digitalTwinSnapshot: HumanDigitalTwinSnapshot | null;
+  dailyInsights: PersonalInsightBrief[];
+  conflictReports: ConflictReport[];
+  commentReviews: CommentReviewRecord[];
+  retentionDays: number;
 }
 
 interface HumanosRootState {
@@ -107,6 +117,8 @@ function migrateDimension(dim: string): PatternDimension {
     case 'Triggers & Sensitivities':
     case 'Triggers':
       return 'Triggers';
+    case 'Recurring Concerns':
+      return 'Recurring Concerns';
     case 'Recurring Patterns':
     case 'Challenges':
       return 'Challenges';
@@ -116,6 +128,24 @@ function migrateDimension(dim: string): PatternDimension {
     default:
       return 'Challenges';
   }
+}
+
+function inferLifeHistoryDomain(chapter?: string, title?: string, existing?: string): LifeHistoryDomain {
+  if (
+    existing === 'Career Changes' ||
+    existing === 'Losses' ||
+    existing === 'Relationships' ||
+    existing === 'Achievements' ||
+    existing === 'Traumatic Events'
+  ) {
+    return existing;
+  }
+  const text = `${chapter || ''} ${title || ''}`.toLowerCase();
+  if (/(trauma|abuse|accident|assault|crisis|collapse)/.test(text)) return 'Traumatic Events';
+  if (/(loss|grief|divorce|breakup|passed away|death|bereavement|layoff)/.test(text)) return 'Losses';
+  if (/(relationship|marriage|partner|family|friend|parent)/.test(text)) return 'Relationships';
+  if (/(promot|award|graduat|achiev|launch|built|won|finish)/.test(text)) return 'Achievements';
+  return 'Career Changes';
 }
 
 function createDefaultUserProfile(displayName = 'Primary Reflection Profile'): UserProfile {
@@ -151,6 +181,11 @@ function createEmptyWorkspace(): HumanosWorkspaceState {
     explainMePortrait: null,
     personalityProfile: null,
     dynamicUserModel: { updatedAt: '', summaryNote: '', entries: [] },
+    digitalTwinSnapshot: null,
+    dailyInsights: [],
+    conflictReports: [],
+    commentReviews: [],
+    retentionDays: 90,
   };
 }
 
@@ -181,8 +216,19 @@ function normalizeWorkspace(parsed: Partial<HumanosWorkspaceState> | undefined):
           dimension: migrateDimension(h.dimension),
         }))
       : [],
-    wellbeingCheckIns: Array.isArray(parsed.wellbeingCheckIns) ? parsed.wellbeingCheckIns : [],
-    timelineEvents: Array.isArray(parsed.timelineEvents) ? parsed.timelineEvents : [],
+    wellbeingCheckIns: Array.isArray(parsed.wellbeingCheckIns)
+      ? parsed.wellbeingCheckIns.map((w) => ({
+          ...w,
+          sleepHours: typeof w.sleepHours === 'number' ? w.sleepHours : 7,
+          sleepQuality: typeof w.sleepQuality === 'number' ? w.sleepQuality : 3,
+        }))
+      : [],
+    timelineEvents: Array.isArray(parsed.timelineEvents)
+      ? parsed.timelineEvents.map((t) => ({
+          ...t,
+          domain: inferLifeHistoryDomain(t.chapter, t.title, t.domain),
+        }))
+      : [],
     journalEntries: Array.isArray(parsed.journalEntries) ? parsed.journalEntries : [],
     growthPlans: Array.isArray(parsed.growthPlans) ? parsed.growthPlans : [],
     goals: Array.isArray(parsed.goals) ? parsed.goals : [],
@@ -201,6 +247,14 @@ function normalizeWorkspace(parsed: Partial<HumanosWorkspaceState> | undefined):
       parsed.dynamicUserModel && Array.isArray(parsed.dynamicUserModel.entries)
         ? parsed.dynamicUserModel
         : { updatedAt: '', summaryNote: '', entries: [] },
+    digitalTwinSnapshot: parsed.digitalTwinSnapshot ?? null,
+    dailyInsights: Array.isArray(parsed.dailyInsights) ? parsed.dailyInsights : [],
+    conflictReports: Array.isArray(parsed.conflictReports) ? parsed.conflictReports : [],
+    commentReviews: Array.isArray(parsed.commentReviews) ? parsed.commentReviews : [],
+    retentionDays:
+      typeof parsed.retentionDays === 'number' && Number.isFinite(parsed.retentionDays)
+        ? Math.min(90, Math.max(30, Math.round(parsed.retentionDays)))
+        : 90,
   };
 }
 
@@ -818,6 +872,8 @@ export function useHumanosStore() {
     (input: Omit<WellbeingCheckIn, 'id' | 'createdAt'>) => {
       const entry: WellbeingCheckIn = {
         ...input,
+        sleepHours: typeof input.sleepHours === 'number' ? input.sleepHours : 7,
+        sleepQuality: typeof input.sleepQuality === 'number' ? input.sleepQuality : 3,
         id: createId('wb'),
         createdAt: new Date().toISOString(),
       };
@@ -990,6 +1046,94 @@ export function useHumanosStore() {
     [updateActiveWorkspace]
   );
 
+  const setDigitalTwinSnapshot = useCallback(
+    (snapshot: HumanDigitalTwinSnapshot | null) => {
+      updateActiveWorkspace((prev) => ({
+        ...prev,
+        digitalTwinSnapshot: snapshot,
+      }));
+    },
+    [updateActiveWorkspace]
+  );
+
+  const addDailyInsight = useCallback(
+    (insight: Omit<PersonalInsightBrief, 'id' | 'createdAt'>) => {
+      const entry: PersonalInsightBrief = {
+        ...insight,
+        id: createId('ins'),
+        createdAt: new Date().toISOString(),
+      };
+      updateActiveWorkspace((prev) => ({
+        ...prev,
+        dailyInsights: [entry, ...prev.dailyInsights],
+      }));
+      return entry;
+    },
+    [updateActiveWorkspace]
+  );
+
+  const deleteDailyInsight = useCallback(
+    (id: string) => {
+      updateActiveWorkspace((prev) => ({
+        ...prev,
+        dailyInsights: prev.dailyInsights.filter((i) => i.id !== id),
+      }));
+    },
+    [updateActiveWorkspace]
+  );
+
+  const addConflictReport = useCallback(
+    (report: Omit<ConflictReport, 'id' | 'createdAt'>) => {
+      const entry: ConflictReport = {
+        ...report,
+        id: createId('cfl'),
+        createdAt: new Date().toISOString(),
+      };
+      updateActiveWorkspace((prev) => ({
+        ...prev,
+        conflictReports: [entry, ...prev.conflictReports],
+      }));
+      return entry;
+    },
+    [updateActiveWorkspace]
+  );
+
+  const deleteConflictReport = useCallback(
+    (id: string) => {
+      updateActiveWorkspace((prev) => ({
+        ...prev,
+        conflictReports: prev.conflictReports.filter((r) => r.id !== id),
+      }));
+    },
+    [updateActiveWorkspace]
+  );
+
+  const addCommentReview = useCallback(
+    (review: Omit<CommentReviewRecord, 'id' | 'createdAt'>) => {
+      const entry: CommentReviewRecord = {
+        ...review,
+        id: createId('rev'),
+        createdAt: new Date().toISOString(),
+      };
+      updateActiveWorkspace((prev) => ({
+        ...prev,
+        commentReviews: [entry, ...prev.commentReviews],
+      }));
+      return entry;
+    },
+    [updateActiveWorkspace]
+  );
+
+  const deleteCommentReview = useCallback(
+    (id: string) => {
+      updateActiveWorkspace((prev) => ({
+        ...prev,
+        commentReviews: prev.commentReviews.filter((r) => r.id !== id),
+      }));
+    },
+    [updateActiveWorkspace]
+  );
+
   const setDynamicUserModel = useCallback(
     (model: { summaryNote: string; entries: DynamicUserModelEntry[]; updatedAt?: string }) => {
       updateActiveWorkspace((prev) => {
@@ -1108,6 +1252,40 @@ export function useHumanosStore() {
     [updateActiveWorkspace]
   );
 
+  const setRetentionDays = useCallback(
+    (days: number) => {
+      const clamped = Math.min(90, Math.max(30, Math.round(days || 90)));
+      updateActiveWorkspace((prev) => ({
+        ...prev,
+        retentionDays: clamped,
+      }));
+      return clamped;
+    },
+    [updateActiveWorkspace]
+  );
+
+  const applyRetentionSweep = useCallback(
+    (daysOverride?: number) => {
+      let removedCheckIns = 0;
+      updateActiveWorkspace((prev) => {
+        const days = Math.min(90, Math.max(30, Math.round(daysOverride ?? prev.retentionDays ?? 90)));
+        const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+        const retainedCheckIns = prev.wellbeingCheckIns.filter((w) => {
+          const ms = Date.parse(w.createdAt);
+          return !Number.isFinite(ms) || ms >= cutoffMs;
+        });
+        removedCheckIns = prev.wellbeingCheckIns.length - retainedCheckIns.length;
+        return {
+          ...prev,
+          retentionDays: days,
+          wellbeingCheckIns: retainedCheckIns,
+        };
+      });
+      return { removedCheckIns };
+    },
+    [updateActiveWorkspace]
+  );
+
   const clearAllData = useCallback(() => {
     updateActiveWorkspace(() => createEmptyWorkspace());
   }, [updateActiveWorkspace]);
@@ -1132,6 +1310,19 @@ export function useHumanosStore() {
     explainMePortrait: state.explainMePortrait,
     personalityProfile: state.personalityProfile,
     dynamicUserModel: state.dynamicUserModel,
+    digitalTwinSnapshot: state.digitalTwinSnapshot,
+    dailyInsights: state.dailyInsights,
+    conflictReports: state.conflictReports,
+    commentReviews: state.commentReviews,
+    retentionDays: state.retentionDays,
+    addDailyInsight,
+    deleteDailyInsight,
+    addConflictReport,
+    deleteConflictReport,
+    addCommentReview,
+    deleteCommentReview,
+    setRetentionDays,
+    applyRetentionSweep,
     createUserProfile,
     selectUserProfile,
     updateUserProfile,
@@ -1171,6 +1362,7 @@ export function useHumanosStore() {
     deleteRelationshipInsight,
     setExplainMePortrait,
     setPersonalityProfile,
+    setDigitalTwinSnapshot,
     setDynamicUserModel,
     upsertUserModelEntry,
     updateUserModelEntry,
